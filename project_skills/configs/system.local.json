@@ -43,7 +43,7 @@
     "skill_match_threshold": 80.0,
     "max_executor_steps": 10,
     "max_actor_steps": 8,
-    "max_iterations_per_task": 10,
+    "max_iterations_per_task": 3,
     "skill_count_limit": 6,
     "python_executable": "E:/miniconda3/envs/earth-bench-skill-eval/python.exe",
     "shell_program": "powershell"

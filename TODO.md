@@ -30,6 +30,13 @@
     - 至少应把当前激活 skill 对应的工具签名、参数类型、是否支持 list/batch、必填字段等信息显式传给 critic，再让它判断这次失败到底是 skill 指令漂移、executor 传参错误、还是工具实现与 schema 不一致
     - 2026-03-18 已补到 critic 输入，并用 `project_skills/runs/debug_q1_gpt54_critic_tool_specs_v2` 验证：critic 已能明确指出 `compute_tvdi(ndvi_path: str, lst_path: str, output_path: str) -> str` 是单文件签名，不再把这类问题仅仅归因为 skill 文案
 
+  - [x] 统一 EO 工具的相对输入路径解析，要求所有 `*_path` / `file_list` / `dir_path` 默认按 `workspace_root` 解释，而不是按当前 Python 进程工作目录解释
+    - 2026-03-18 已在 `project_skills/nlrl_skills/tools.py` 的统一 EO 调用入口补上输入路径规范化，没有去改各个 EO 工具脚本
+    - 具体做法是：在 `EOToolRuntime.execute(...)` 中只规范化输入型参数，统一把相对 `dir_path`、`*_path`、`file_list` 等解析为相对 `workspace_root` 的路径；`output_path` 继续保持原有行为，不改 EO 工具各自的临时输出目录逻辑
+    - 同时把工作区相对路径解析改成允许经过工作区内的 junction/link，避免 `project_skills/benchmark` 这种目录链接在 `.resolve()` 后被误判成“逃出 workspace”
+    - 验证结果：`project_skills/runs/debug_q1_gpt54_tool_path_fix/iteration_01/env/executor/executor_steps/20260318T124420Z_executor_step_2_request.json` 已显示 step 1 的 `get_filelist(dir_path=\"benchmark/data/question1\")` 返回 `success: True`，不再出现此前 `WinError 3` 的路径错误
+    - 这说明旧的路径解析问题已经消除；当前 q1 剩余失败点已转移到 `compute_tvdi` 的 batch/scalar 契约摇摆、参数传递方式不稳定，以及在 10 步预算下过早 blocked
+
   - 结论：必须先把这类“skill 错误指示模型、导致低级参数传递/调用错误”的问题压住，例如补足工具 schema、参数类型校验、skill 修改后的接口一致性检查、失败类型分流（skill 策略错 vs 工具契约错），否则继续追求所谓 skill 的高级进化只会放大基础错误
 
 qwen3-8B 爆token  PTM（得看case，具体是哪里爆了）

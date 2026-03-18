@@ -36,7 +36,7 @@ class RuntimeConfig:
     skill_match_threshold: float = 80.0
     max_executor_steps: int = 12
     max_actor_steps: int = 8
-    max_iterations_per_task: int = 10
+    max_iterations_per_task: int = 3
     skill_count_limit: int = 6
     python_executable: str = "python"
     shell_program: str = "powershell"

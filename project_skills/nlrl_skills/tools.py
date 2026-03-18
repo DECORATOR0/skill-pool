@@ -10,7 +10,7 @@ from dataclasses import dataclass, field
 from pathlib import Path
 from typing import Any, Callable
 
-from .utils import ensure_dir, read_text, safe_relative_path, write_text
+from .utils import ensure_dir, read_text, write_text
 
 EO_TOOL_FILES = ["Index.py", "Inversion.py", "Perception.py", "Analysis.py", "Statistics.py"]
 
@@ -73,6 +73,16 @@ def _annotation_repr(annotation: Any) -> str:
     return repr(annotation)
 
 
+def _workspace_relative_path(base_dir: Path, user_path: str) -> Path:
+    normalized = user_path.replace("\\", "/").strip()
+    path = Path(normalized)
+    if path.is_absolute():
+        return path
+    if any(part == ".." for part in path.parts):
+        raise ValueError(f"Path escapes base directory: {user_path}")
+    return base_dir.joinpath(*[part for part in path.parts if part not in {"", "."}])
+
+
 class EOToolRuntime:
     def __init__(self, workspace_root: Path, temp_root: Path):
         self.workspace_root = workspace_root
@@ -80,6 +90,55 @@ class EOToolRuntime:
         self.temp_root = ensure_dir(temp_root)
         self._registry: dict[str, ToolSpec] = {}
         self._load_all()
+
+    def _is_output_argument(self, param_name: str) -> bool:
+        normalized = param_name.lower()
+        return any(token in normalized for token in ("output", "save", "result"))
+
+    def _is_input_path_argument(self, param_name: str) -> bool:
+        normalized = param_name.lower()
+        if self._is_output_argument(normalized):
+            return False
+        return (
+            normalized == "path"
+            or normalized == "dir_path"
+            or normalized.endswith("_path")
+            or normalized.endswith("_file")
+            or normalized.endswith("_dir")
+            or "file_path" in normalized
+            or "image_path" in normalized
+        )
+
+    def _is_input_path_list_argument(self, param_name: str) -> bool:
+        normalized = param_name.lower()
+        if self._is_output_argument(normalized):
+            return False
+        return (
+            normalized in {"paths", "files"}
+            or normalized.endswith("_paths")
+            or normalized.endswith("_files")
+            or "file_list" in normalized
+            or "path_list" in normalized
+            or "image_list" in normalized
+        )
+
+    def _resolve_workspace_input_path(self, value: str) -> str:
+        normalized = value.replace("\\", "/").strip()
+        if not normalized:
+            return value
+        if Path(normalized).is_absolute():
+            return str(Path(normalized))
+        return str(_workspace_relative_path(self.workspace_root, normalized))
+
+    def _normalize_argument(self, param_name: str, value: Any) -> Any:
+        if isinstance(value, str) and self._is_input_path_argument(param_name):
+            return self._resolve_workspace_input_path(value)
+        if isinstance(value, list) and self._is_input_path_list_argument(param_name):
+            return [
+                self._resolve_workspace_input_path(item) if isinstance(item, str) else item
+                for item in value
+            ]
+        return value
 
     def _parse_tool_nodes(self, path: Path) -> list[tuple[str, str, dict[str, Any]]]:
         tree = ast.parse(read_text(path))
@@ -162,7 +221,7 @@ class EOToolRuntime:
         for param_name, param in sig.parameters.items():
             if param.kind in (inspect.Parameter.POSITIONAL_OR_KEYWORD, inspect.Parameter.KEYWORD_ONLY):
                 if param_name in arguments:
-                    accepted[param_name] = arguments[param_name]
+                    accepted[param_name] = self._normalize_argument(param_name, arguments[param_name])
         return func(**accepted)
 
 
@@ -216,10 +275,10 @@ class Toolbox:
             or normalized.startswith("references/")
             or normalized.startswith("assets/")
         ):
-            skill_target = safe_relative_path(skill_dir, normalized)
+            skill_target = _workspace_relative_path(skill_dir, normalized)
             if skill_target.exists() or not prefer_existing:
                 return skill_target
-        return safe_relative_path(self.context.workspace_root, normalized)
+        return _workspace_relative_path(self.context.workspace_root, normalized)
 
     def _wrap_eo_tool(self, tool_name: str) -> Callable[..., Any]:
         def _call(**kwargs: Any) -> Any:
