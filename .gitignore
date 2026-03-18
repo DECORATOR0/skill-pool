@@ -1,0 +1,34 @@
+benchmark/
+project_skills/benchmark/
+project_skills/runs/
+
+# Python cache / bytecode
+__pycache__/
+*.py[cod]
+*$py.class
+
+# Python tooling caches
+.pytest_cache/
+.mypy_cache/
+.ruff_cache/
+.ipynb_checkpoints/
+
+# Python virtual environments
+/.venv/
+/venv/
+/env/
+/ENV/
+
+# Python build / coverage artifacts
+.coverage
+.coverage.*
+htmlcov/
+build/
+dist/
+.eggs/
+*.egg-info/
+pip-wheel-metadata/
+
+# OS noise
+.DS_Store
+Thumbs.db
