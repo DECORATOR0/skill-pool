@@ -7,6 +7,7 @@ from .config import SystemConfig
 from .llm import OpenAICompatibleLLM, log_llm_call
 from .prompting import render_prompt
 from .schemas import CriticReward, EnvState, LLMMessage
+from .tools import ToolContext, Toolbox
 from .utils import write_json
 
 
@@ -14,8 +15,23 @@ class SkillCritic:
     def __init__(self, config: SystemConfig):
         self.config = config
         self.llm = OpenAICompatibleLLM(config.critic)
+        tool_context = ToolContext(
+            workspace_root=config.workspace_root,
+            skill_library_root=config.skill_library_root,
+            temp_root=config.run_root / "temp",
+            python_executable=config.runtime.python_executable,
+            shell_program=config.runtime.shell_program,
+        )
+        self.toolbox = Toolbox(tool_context)
 
     def evaluate(self, state: EnvState, log_dir: Path) -> CriticReward:
+        active_tool_specs = []
+        if state.active_skill is not None:
+            self.toolbox.set_active_skill_dir(state.active_skill.header.skill_dir)
+            try:
+                active_tool_specs = self.toolbox.tool_debug_specs(state.active_skill.header.allowed_tools or None)
+            finally:
+                self.toolbox.set_active_skill_dir(None)
         system_prompt = render_prompt(
             self.config.prompt_root / "critic_system.md",
             skill_count_limit=self.config.runtime.skill_count_limit,
@@ -45,6 +61,7 @@ class SkillCritic:
                     "gold_trajectory": state.gold_trajectory,
                     "skill_headers": [header.__dict__ for header in state.skill_headers],
                     "active_skill": None if state.active_skill is None else state.active_skill.header.__dict__,
+                    "active_skill_tool_specs": active_tool_specs,
                     "task_context": state.task_context,
                 },
                 ensure_ascii=False,

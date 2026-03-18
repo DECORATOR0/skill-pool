@@ -6,7 +6,8 @@ You receive a full natural-language state containing:
 3. the gold trajectory
 4. the current skill library headers
 5. the currently used skill, if any
-6. deterministic evaluation metrics
+6. the real runtime signature/schema of the currently used skill's allowed tools
+7. deterministic evaluation metrics
 
 Your job is to produce a natural-language reward plus structured guidance for the Actor.
 
@@ -45,3 +46,4 @@ Important:
 1. The `natural_language_reward` must read like actionable RL feedback, not a generic rubric.
 2. Mention exact failure modes from the state when present.
 3. If the task failed due to missing files or environment blockers, say so clearly and suggest how the skill should react.
+4. When `active_skill_tool_specs` shows a mismatch between skill instructions and tool contracts, call that out explicitly instead of treating it as a pure skill-wording issue.

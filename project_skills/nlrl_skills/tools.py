@@ -22,6 +22,7 @@ class ToolSpec:
     parameters: dict[str, Any]
     callable: Callable[..., Any]
     source: str
+    signature_callable: Callable[..., Any] | None = None
 
     def prompt_entry(self) -> str:
         return json.dumps(
@@ -34,10 +35,42 @@ class ToolSpec:
             ensure_ascii=False,
         )
 
+    def debug_entry(self) -> dict[str, Any]:
+        signature_target = self.signature_callable or self.callable
+        signature = inspect.signature(signature_target)
+        return {
+            "name": self.name,
+            "description": self.description,
+            "source": self.source,
+            "prompt_parameters": self.parameters,
+            "python_signature": str(signature),
+            "python_parameters": [
+                {
+                    "name": param.name,
+                    "kind": str(param.kind),
+                    "annotation": _annotation_repr(param.annotation),
+                    "has_default": param.default is not inspect._empty,
+                    "default": None if param.default is inspect._empty else repr(param.default),
+                }
+                for param in signature.parameters.values()
+            ],
+            "python_return_annotation": _annotation_repr(signature.return_annotation),
+        }
+
 
 def _truncate(value: Any, limit: int = 4000) -> str:
     text = value if isinstance(value, str) else json.dumps(value, ensure_ascii=False, default=str)
     return text[:limit]
+
+
+def _annotation_repr(annotation: Any) -> str:
+    if annotation is inspect._empty:
+        return ""
+    if isinstance(annotation, str):
+        return annotation
+    if getattr(annotation, "__module__", "") == "builtins":
+        return getattr(annotation, "__name__", repr(annotation))
+    return repr(annotation)
 
 
 class EOToolRuntime:
@@ -163,6 +196,7 @@ class Toolbox:
                 parameters=spec.parameters,
                 callable=self._wrap_eo_tool(spec.name),
                 source=spec.source,
+                signature_callable=spec.callable,
             )
 
     def _register(self, spec: ToolSpec) -> None:
@@ -309,6 +343,9 @@ class Toolbox:
 
     def tool_prompt(self, allowed_tools: list[str] | None = None) -> str:
         return "\n".join(spec.prompt_entry() for spec in self.specs(allowed_tools))
+
+    def tool_debug_specs(self, allowed_tools: list[str] | None = None) -> list[dict[str, Any]]:
+        return [spec.debug_entry() for spec in self.specs(allowed_tools)]
 
     def list_dir(self, path: str = ".") -> list[str]:
         target = self._resolve_workspace_path(path)
