@@ -37,6 +37,22 @@
     - 验证结果：`project_skills/runs/debug_q1_gpt54_tool_path_fix/iteration_01/env/executor/executor_steps/20260318T124420Z_executor_step_2_request.json` 已显示 step 1 的 `get_filelist(dir_path=\"benchmark/data/question1\")` 返回 `success: True`，不再出现此前 `WinError 3` 的路径错误
     - 这说明旧的路径解析问题已经消除；当前 q1 剩余失败点已转移到 `compute_tvdi` 的 batch/scalar 契约摇摆、参数传递方式不稳定，以及在 10 步预算下过早 blocked
 
+  - [x] 让 executor 只消费首个合法 JSON action，并容忍单次响应里出现多个 JSON / 列表被串成字符串的低级格式噪声
+    - 2026-03-18 已在 `project_skills/nlrl_skills/utils.py` 的 `extract_json_object(...)` 中改为基于 `JSONDecoder.raw_decode` 抽取首个顶层 JSON 对象，而不是要求整段文本只能有一个 JSON
+    - 这次修复直接针对 `project_skills/runs/debug_q1_gpt54_executor/iteration_01/iteration_failure.json` 里的 `Extra data` 失败，以及 `project_skills/runs/debug_q1_gpt54_executor/iteration_01/env/executor/executor_steps/20260318T081140Z_executor_step_1_response.json` 这类“一个 completion 里连续吐多个 JSON”的响应
+    - 修完后 executor 不再因为同一响应里附带额外 JSON 直接崩溃；后续 run 已能继续暴露更真实的工具契约问题，而不是卡死在第一步解析
+
+  - [x] 让统一 EO 调用层对齐 gold 所需的 batched `compute_tvdi` 契约，并阻断“列表被错误串成字符串”或“因误判为标量接口而提前 blocked”的两类低级失败
+    - 当前 dataset 的 gold trajectory 明确把 `compute_tvdi` 当作 batched 工具使用：一次调用直接传入成组 `ndvi_path` / `lst_path` / `output_path` 列表
+    - 但本地原始 `agent/tools/Index.py` 中的 `compute_tvdi` 真实实现仍是标量签名 `compute_tvdi(ndvi_path: str, lst_path: str, output_path: str) -> str`，而旧版 `project_skills/nlrl_skills/tools.py` 暴露给 executor 的 schema 又把参数统一写成 `string`
+    - 这会同时诱发两类失败：一类是模型误把列表序列化成单个长字符串，形成最早那种参数黏连错误；另一类是模型看到标量 schema 后，理性判断 91 对影像在步数预算内不可能完成，于是过早 `blocked`
+    - 目标修法应保持“只改统一调用层、不改原始 EO 工具”：由调用层显式展示 batch 友好的 schema，必要时把字符串化列表还原成原生 list，并在 `compute_tvdi` 处做一次调用内 fan-out，使 executor 的单个 step 真正能完成 gold 所需的 batched TVDI 生成
+    - 2026-03-18 已在 `project_skills/nlrl_skills/tools.py` 完成这层修复：EO schema 现在按真实注解展示；`compute_tvdi` 暴露为 `string | list[string]` 并在统一调用层内部 fan-out；对长得像 `[...]` 的字符串参数会先还原为原生 list；同时会把 `Result saved at ...` / `Result save at ...` 规范化成真实输出路径，便于后续工具直接接续
+    - 本地冒烟验证已通过：同一 step 里用两组 q1 输入做 batched `compute_tvdi`，统一调用层正确返回了两个输出栅格的路径列表；把字符串化列表喂给 `compute_tvdi` 和 `calculate_tif_average` 也能被自动还原并继续执行
+    - q1 验证 run：`project_skills/runs/debug_q1_gpt54_batch_schema_fix`
+    - 其中 `project_skills/runs/debug_q1_gpt54_batch_schema_fix/iteration_01/env/state.json` 已显示 step 2 的 `compute_tvdi` arguments 是原生列表，而不是黏连字符串；`project_skills/runs/debug_q1_gpt54_batch_schema_fix/iteration_01/env/executor/executor_steps/20260318T134832Z_executor_step_4_request.json` 已显示 step 3 的 `calculate_tif_average(file_list=[...])` 收到的是按年份分组后的真实 TVDI 路径列表，不再出现“只能标量所以提前 blocked”
+    - 这次 q1 仍未成功，但失败点已经迁移为新的环境依赖问题：`project_skills/osgeo/gdal.py` 当前是一个缺失 GDAL 的 shim，导致 `calculate_tif_average` 一调用就抛 `GDAL runtime is not available in this environment. A GDAL-dependent tool was invoked.`。这说明 batch/schema/参数黏连问题本身已经被压住，剩余阻塞不在这一层
+
   - 结论：必须先把这类“skill 错误指示模型、导致低级参数传递/调用错误”的问题压住，例如补足工具 schema、参数类型校验、skill 修改后的接口一致性检查、失败类型分流（skill 策略错 vs 工具契约错），否则继续追求所谓 skill 的高级进化只会放大基础错误
 
 qwen3-8B 爆token  PTM（得看case，具体是哪里爆了）

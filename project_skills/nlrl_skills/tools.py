@@ -6,13 +6,23 @@ import inspect
 import json
 import subprocess
 import sys
+import types
 from dataclasses import dataclass, field
 from pathlib import Path
-from typing import Any, Callable
+from typing import Any, Callable, Union, get_args, get_origin, get_type_hints
 
 from .utils import ensure_dir, read_text, write_text
 
 EO_TOOL_FILES = ["Index.py", "Inversion.py", "Perception.py", "Analysis.py", "Statistics.py"]
+_RESULT_PATH_PREFIXES = ("Result saved at ", "Result save at ")
+
+
+def _compute_tvdi_batch_signature(
+    ndvi_path: str | list[str],
+    lst_path: str | list[str],
+    output_path: str | list[str],
+) -> str | list[str]:
+    raise NotImplementedError
 
 
 @dataclass
@@ -73,6 +83,59 @@ def _annotation_repr(annotation: Any) -> str:
     return repr(annotation)
 
 
+def _annotation_to_schema(annotation: Any) -> dict[str, Any]:
+    if annotation is inspect._empty or annotation is Any:
+        return {"type": "string"}
+    if annotation is None or annotation is type(None):
+        return {"type": "null"}
+    if annotation is bool:
+        return {"type": "boolean"}
+    if annotation is int:
+        return {"type": "integer"}
+    if annotation is float:
+        return {"type": "number"}
+    if annotation is str:
+        return {"type": "string"}
+    origin = get_origin(annotation)
+    if origin in (Union, types.UnionType):
+        return {"anyOf": [_annotation_to_schema(arg) for arg in get_args(annotation)]}
+    if origin in (list, tuple, set):
+        args = get_args(annotation)
+        item_annotation = args[0] if args else Any
+        return {"type": "array", "items": _annotation_to_schema(item_annotation)}
+    if origin is dict:
+        args = get_args(annotation)
+        value_annotation = args[1] if len(args) >= 2 else Any
+        return {"type": "object", "additionalProperties": _annotation_to_schema(value_annotation)}
+    if annotation in (list, tuple, set):
+        return {"type": "array"}
+    if annotation is dict:
+        return {"type": "object"}
+    return {"type": "string"}
+
+
+def _schema_from_signature(
+    signature_target: Callable[..., Any],
+    *,
+    parameter_descriptions: dict[str, str] | None = None,
+) -> dict[str, Any]:
+    params: dict[str, Any] = {"type": "object", "properties": {}, "required": []}
+    try:
+        resolved_annotations = get_type_hints(signature_target)
+    except Exception:
+        resolved_annotations = {}
+    for param in inspect.signature(signature_target).parameters.values():
+        if param.name == "self":
+            continue
+        annotation = resolved_annotations.get(param.name, param.annotation)
+        param_schema = _annotation_to_schema(annotation)
+        param_schema["description"] = (parameter_descriptions or {}).get(param.name, f"Argument {param.name}")
+        params["properties"][param.name] = param_schema
+        if param.default is inspect._empty:
+            params["required"].append(param.name)
+    return params
+
+
 def _workspace_relative_path(base_dir: Path, user_path: str) -> Path:
     normalized = user_path.replace("\\", "/").strip()
     path = Path(normalized)
@@ -90,6 +153,20 @@ class EOToolRuntime:
         self.temp_root = ensure_dir(temp_root)
         self._registry: dict[str, ToolSpec] = {}
         self._load_all()
+
+    def _tool_signature_target(self, tool_name: str, func: Callable[..., Any]) -> Callable[..., Any]:
+        if tool_name == "compute_tvdi":
+            return _compute_tvdi_batch_signature
+        return func
+
+    def _tool_parameter_descriptions(self, tool_name: str) -> dict[str, str]:
+        if tool_name == "compute_tvdi":
+            return {
+                "ndvi_path": "Single NDVI raster path, or an aligned list of NDVI raster paths for one batched TVDI call.",
+                "lst_path": "Single LST raster path, or an aligned list of LST raster paths in the same order as ndvi_path.",
+                "output_path": "Single relative output path, or aligned output paths for batched TVDI generation.",
+            }
+        return {}
 
     def _is_output_argument(self, param_name: str) -> bool:
         normalized = param_name.lower()
@@ -131,9 +208,22 @@ class EOToolRuntime:
         return str(_workspace_relative_path(self.workspace_root, normalized))
 
     def _normalize_argument(self, param_name: str, value: Any) -> Any:
+        if isinstance(value, str):
+            stripped = value.strip()
+            if stripped.startswith("[") and stripped.endswith("]"):
+                for parser in (json.loads, ast.literal_eval):
+                    try:
+                        parsed = parser(stripped)
+                    except Exception:
+                        continue
+                    if isinstance(parsed, list):
+                        value = parsed
+                        break
         if isinstance(value, str) and self._is_input_path_argument(param_name):
             return self._resolve_workspace_input_path(value)
-        if isinstance(value, list) and self._is_input_path_list_argument(param_name):
+        if isinstance(value, list) and (
+            self._is_input_path_list_argument(param_name) or self._is_input_path_argument(param_name)
+        ):
             return [
                 self._resolve_workspace_input_path(item) if isinstance(item, str) else item
                 for item in value
@@ -200,29 +290,82 @@ class EOToolRuntime:
             for name, value in vars(module).items():
                 if name not in parsed or not inspect.isfunction(value):
                     continue
-                desc, schema = parsed[name]
+                desc, _ = parsed[name]
+                signature_target = self._tool_signature_target(name, value)
+                schema = _schema_from_signature(
+                    signature_target,
+                    parameter_descriptions=self._tool_parameter_descriptions(name),
+                )
                 self._registry[name] = ToolSpec(
                     name=name,
                     description=desc or f"EO tool {name}",
                     parameters=schema,
                     callable=value,
                     source=f"agent/tools/{module_file}",
+                    signature_callable=signature_target,
                 )
 
     def specs(self) -> list[ToolSpec]:
         return [self._registry[name] for name in sorted(self._registry)]
 
+    def _normalize_tool_result(self, result: Any) -> Any:
+        if isinstance(result, str):
+            for prefix in _RESULT_PATH_PREFIXES:
+                if result.startswith(prefix):
+                    return result[len(prefix) :].strip()
+            return result
+        if isinstance(result, list):
+            return [self._normalize_tool_result(item) for item in result]
+        if isinstance(result, tuple):
+            return [self._normalize_tool_result(item) for item in result]
+        return result
+
+    def _execute_compute_tvdi(self, func: Callable[..., Any], arguments: dict[str, Any]) -> Any:
+        accepted = {
+            name: self._normalize_argument(name, arguments[name])
+            for name in ("ndvi_path", "lst_path", "output_path")
+            if name in arguments
+        }
+        ndvi_value = accepted.get("ndvi_path")
+        lst_value = accepted.get("lst_path")
+        output_value = accepted.get("output_path")
+        has_batch = any(isinstance(value, list) for value in (ndvi_value, lst_value, output_value))
+        if not has_batch:
+            return self._normalize_tool_result(func(**accepted))
+        if not all(isinstance(value, list) for value in (ndvi_value, lst_value, output_value)):
+            raise ValueError(
+                "compute_tvdi batch mode requires ndvi_path, lst_path, and output_path to all be lists of equal length."
+            )
+        if not (len(ndvi_value) == len(lst_value) == len(output_value)):
+            raise ValueError(
+                "compute_tvdi batch mode requires ndvi_path, lst_path, and output_path to have the same length."
+            )
+        outputs: list[Any] = []
+        for ndvi_path, lst_path, output_path in zip(ndvi_value, lst_value, output_value, strict=True):
+            outputs.append(
+                self._normalize_tool_result(
+                    func(
+                        ndvi_path=ndvi_path,
+                        lst_path=lst_path,
+                        output_path=output_path,
+                    )
+                )
+            )
+        return outputs
+
     def execute(self, tool_name: str, arguments: dict[str, Any]) -> Any:
         if tool_name not in self._registry:
             raise KeyError(f"Unknown EO tool: {tool_name}")
         func = self._registry[tool_name].callable
+        if tool_name == "compute_tvdi":
+            return self._execute_compute_tvdi(func, arguments)
         accepted: dict[str, Any] = {}
         sig = inspect.signature(func)
         for param_name, param in sig.parameters.items():
             if param.kind in (inspect.Parameter.POSITIONAL_OR_KEYWORD, inspect.Parameter.KEYWORD_ONLY):
                 if param_name in arguments:
                     accepted[param_name] = self._normalize_argument(param_name, arguments[param_name])
-        return func(**accepted)
+        return self._normalize_tool_result(func(**accepted))
 
 
 @dataclass
@@ -255,7 +398,7 @@ class Toolbox:
                 parameters=spec.parameters,
                 callable=self._wrap_eo_tool(spec.name),
                 source=spec.source,
-                signature_callable=spec.callable,
+                signature_callable=spec.signature_callable or spec.callable,
             )
 
     def _register(self, spec: ToolSpec) -> None:
