@@ -12,6 +12,8 @@ from .config import LLMConfig
 from .schemas import LLMMessage
 from .utils import ensure_dir, extract_json_object, utc_timestamp, write_json
 
+JSON_OBJECT_RESPONSE_FORMAT: dict[str, str] = {"type": "json_object"}
+
 
 @dataclass
 class LLMCallResult:
@@ -48,7 +50,14 @@ class OpenAICompatibleLLM:
         )
         return any(marker in message for marker in retry_markers)
 
-    def chat(self, messages: list[LLMMessage], *, temperature: float | None = None, max_tokens: int | None = None) -> LLMCallResult:
+    def chat(
+        self,
+        messages: list[LLMMessage],
+        *,
+        temperature: float | None = None,
+        max_tokens: int | None = None,
+        response_format: dict[str, Any] | None = None,
+    ) -> LLMCallResult:
         payload = {
             "model": self.config.model,
             "messages": [{"role": m.role, "content": m.content} for m in messages],
@@ -57,6 +66,8 @@ class OpenAICompatibleLLM:
         resolved_max_tokens = self.config.max_tokens if max_tokens is None else max_tokens
         if resolved_max_tokens is not None:
             payload["max_tokens"] = resolved_max_tokens
+        if response_format is not None:
+            payload["response_format"] = response_format
         last_error: Exception | None = None
         for attempt in range(1, self.max_retries + 1):
             try:
@@ -83,7 +94,12 @@ class OpenAICompatibleLLM:
         temperature: float | None = None,
         max_tokens: int | None = None,
     ) -> tuple[dict[str, Any], LLMCallResult]:
-        result = self.chat(messages, temperature=temperature, max_tokens=max_tokens)
+        result = self.chat(
+            messages,
+            temperature=temperature,
+            max_tokens=max_tokens,
+            response_format=JSON_OBJECT_RESPONSE_FORMAT,
+        )
         return extract_json_object(result.text), result
 
 

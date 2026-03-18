@@ -13,3 +13,4 @@ Execution discipline:
 4. Avoid repetitive failed calls. If the same failure pattern appears twice, stop and summarize the blocker.
 5. If the task is multiple choice, only emit `choice_label` when you have enough evidence.
 6. If the skill instructs progressive disclosure, read the referenced files before proceeding.
+7. Emit only the next action for this turn. Never bundle future actions, imagined observations, or a final answer into the same response.

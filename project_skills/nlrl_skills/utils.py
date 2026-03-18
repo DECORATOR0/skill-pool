@@ -54,23 +54,26 @@ def extract_json_object(text: str) -> dict[str, Any]:
     text = text.strip()
     if not text:
         raise ValueError("Empty model response; expected JSON object.")
-    try:
-        data = json.loads(text)
+    decoder = json.JSONDecoder()
+    candidates = [text]
+    start = text.find("{")
+    if start > 0:
+        candidates.append(text[start:])
+
+    last_error: json.JSONDecodeError | None = None
+    for candidate in candidates:
+        try:
+            data, _ = decoder.raw_decode(candidate)
+        except json.JSONDecodeError as exc:
+            last_error = exc
+            continue
         if not isinstance(data, dict):
             raise ValueError("Top-level JSON must be an object.")
         return data
-    except json.JSONDecodeError:
-        pass
 
-    start = text.find("{")
-    end = text.rfind("}")
-    if start == -1 or end == -1 or end <= start:
-        raise ValueError(f"Unable to locate JSON object in response: {text[:400]}")
-    candidate = text[start : end + 1]
-    data = json.loads(candidate)
-    if not isinstance(data, dict):
-        raise ValueError("Top-level JSON must be an object.")
-    return data
+    if last_error is not None:
+        raise last_error
+    raise ValueError(f"Unable to locate JSON object in response: {text[:400]}")
 
 
 def safe_relative_path(base_dir: Path, user_path: str) -> Path:

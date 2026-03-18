@@ -21,11 +21,11 @@
     "timeout_seconds": 180
   },
   "executor": {
-    "model": "Qwen/Qwen3-8B",
+    "model": "gpt-5.4",
     "base_url": "http://35.220.164.252:3888/v1",
     "api_key": "sk-JhritIDG3G8QxS6pPJ1kIfqxWorzSAZgHgkLz4EA0RgFl9lQ",
     "temperature": 0.1,
-    "max_tokens": 32768,
+    "max_tokens": null,
     "timeout_seconds": 180
   },
   "paths": {

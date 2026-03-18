@@ -4,7 +4,7 @@ import json
 from pathlib import Path
 
 from .config import LLMConfig
-from .llm import OpenAICompatibleLLM, log_llm_call
+from .llm import JSON_OBJECT_RESPONSE_FORMAT, OpenAICompatibleLLM, log_llm_call
 from .prompting import load_prompt
 from .schemas import LLMMessage, ToolCallRecord
 from .tools import Toolbox
@@ -46,11 +46,11 @@ class JSONToolAgent:
             "summary": "",
         }
         for step_idx in range(1, max_steps + 1):
-            result = self.llm.chat(messages)
+            result = self.llm.chat(messages, response_format=JSON_OBJECT_RESPONSE_FORMAT)
             log_llm_call(log_dir / f"{role_name}_steps", f"{role_name}_step_{step_idx}", result)
             raw_outputs.append(result.text)
             payload = extract_json_object(result.text)
-            messages.append(LLMMessage(role="assistant", content=result.text))
+            messages.append(LLMMessage(role="assistant", content=json.dumps(payload, ensure_ascii=False)))
             action = str(payload.get("action", "")).strip().lower()
             if action == "final":
                 final_payload = payload

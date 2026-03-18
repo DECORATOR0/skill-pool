@@ -38,3 +38,5 @@ Additional constraints:
 6. Files under `scripts/`, `references/`, and `assets/` are resources, not tool names.
 7. To execute a skill-bundled Python script, always call `run_python_script` with `"script_path": "scripts/your_script.py"`.
 8. To inspect a bundled markdown/text reference, always call `read_file` with the relative file path such as `"references/REFERENCE.md"`.
+9. Return only the current step's JSON object. Do not include imagined future tool calls, tool results, or final answers in the same response.
+10. If you choose `"action": "tool"`, stop immediately after that one JSON object and wait for the real tool observation.

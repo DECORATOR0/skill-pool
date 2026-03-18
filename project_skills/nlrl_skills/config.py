@@ -87,9 +87,13 @@ class SystemConfig:
 def _llm_from_dict(name: str, data: dict[str, Any]) -> LLMConfig:
     max_tokens: int | None = None
     if name == "router":
-        max_tokens = int(data["max_tokens"]) if "max_tokens" in data else None
+        if "max_tokens" in data and data["max_tokens"] is not None:
+            max_tokens = int(data["max_tokens"])
     elif name == "executor":
-        max_tokens = int(data["max_tokens"]) if "max_tokens" in data else 32768
+        if "max_tokens" in data:
+            max_tokens = None if data["max_tokens"] is None else int(data["max_tokens"])
+        else:
+            max_tokens = 32768
     return LLMConfig(
         name=name,
         model=data["model"],
