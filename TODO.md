@@ -53,6 +53,14 @@
     - 其中 `project_skills/runs/debug_q1_gpt54_batch_schema_fix/iteration_01/env/state.json` 已显示 step 2 的 `compute_tvdi` arguments 是原生列表，而不是黏连字符串；`project_skills/runs/debug_q1_gpt54_batch_schema_fix/iteration_01/env/executor/executor_steps/20260318T134832Z_executor_step_4_request.json` 已显示 step 3 的 `calculate_tif_average(file_list=[...])` 收到的是按年份分组后的真实 TVDI 路径列表，不再出现“只能标量所以提前 blocked”
     - 这次 q1 仍未成功，但失败点已经迁移为新的环境依赖问题：`project_skills/osgeo/gdal.py` 当前是一个缺失 GDAL 的 shim，导致 `calculate_tif_average` 一调用就抛 `GDAL runtime is not available in this environment. A GDAL-dependent tool was invoked.`。这说明 batch/schema/参数黏连问题本身已经被压住，剩余阻塞不在这一层
 
+  - [x] 修复 `calculate_tif_average` 对 `NaN` / `nodata` 的错误聚合，消除 q1 年度平均栅格全空的 EO 数值工具链问题
+    - 2026-03-19 用隔离空库 run `project_skills/runs/debug_q1_empty_skill_library_20260319_01` 继续往下追后，q1 第 3 轮已经能跑通 `get_filelist -> compute_tvdi -> calculate_tif_average -> calc_batch_image_mean`，失败点不再是 router 或 skill 缺失，而是 `iteration_03/env/state.json` 里年度均值直接变成 `[NaN, NaN, NaN, NaN]`
+    - 同一 run 的 `stderr.log` 已出现 `project_skills/agent/tools/Statistics.py:228: RuntimeWarning: Mean of empty slice`；进一步检查 `project_skills/runs/temp/eo_runtime/statistics/benchmark/out/question1/tvdi_annual_avg_2019.tif` 到 `tvdi_annual_avg_2022.tif`，确认 4 张年度平均栅格都是 `finite_count=0`、整图全 `NaN`
+    - 但单景 TVDI 并不是全空：例如 `project_skills/runs/temp/eo_runtime/index/question1/tvdi_2019-01-01.tif` 里仍有大量有限值。这说明问题不在 batch 调用层，而在 `calculate_tif_average` 直接对含 `NaN` 的多景栅格做普通求和/除总张数，导致任一时相的 `NaN` 都会污染该像元的全年平均
+    - 2026-03-19 已在 `project_skills/agent/tools/Statistics.py` 修复：读取时显式把 `nodata` / `inf` 转成 `NaN`；累计时只对有限像元求和并维护 `valid_count`；输出时仅在 `valid_count > 0` 的位置求均值，剩余位置保留 `NaN`；`uint8` 分支也改成只基于有限值归一化，避免再次把空值传播成异常结果
+    - 修复后验证 1：`project_skills/runs/debug_q1_after_tool_fix_20260319_01/task_summary.json` 中 q1 已成功，说明此前“年度图全 `NaN` 导致趋势计算无法继续”的硬阻塞已经消除
+    - 修复后验证 2：继续用隔离配置跑 `project_skills/runs/debug_train_first5_after_tool_fix_20260319_01/run_summary.json`，前五题全部成功，说明这次修复不仅解决了 q1，也实质改善了连续训练的可用性
+
   - 结论：必须先把这类“skill 错误指示模型、导致低级参数传递/调用错误”的问题压住，例如补足工具 schema、参数类型校验、skill 修改后的接口一致性检查、失败类型分流（skill 策略错 vs 工具契约错），否则继续追求所谓 skill 的高级进化只会放大基础错误
 
 qwen3-8B 爆token  PTM（得看case，具体是哪里爆了）

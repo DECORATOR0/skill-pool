@@ -2748,6 +2748,27 @@ def calculate_tif_average(file_list: list[str], output_path: str, uint8: bool = 
     output_path = TEMP_DIR / output_path
     os.makedirs(output_path.parent, exist_ok=True)
     
+    def _read_raster_as_float(ds):
+        if bands == 1:
+            band = ds.GetRasterBand(1)
+            img = band.ReadAsArray().astype(np.float64)
+            nodata = band.GetNoDataValue()
+            if nodata is not None:
+                img = np.where(img == nodata, np.nan, img)
+            img = np.where(np.isinf(img), np.nan, img)
+            return img
+
+        band_arrays = []
+        for band_idx in range(bands):
+            band = ds.GetRasterBand(band_idx + 1)
+            band_data = band.ReadAsArray().astype(np.float64)
+            nodata = band.GetNoDataValue()
+            if nodata is not None:
+                band_data = np.where(band_data == nodata, np.nan, band_data)
+            band_data = np.where(np.isinf(band_data), np.nan, band_data)
+            band_arrays.append(band_data)
+        return np.stack(band_arrays, axis=0).transpose(1, 2, 0)
+
     # Read first file to get basic info
     ds = gdal.Open(file_list[0])
     bands = ds.RasterCount
@@ -2755,50 +2776,56 @@ def calculate_tif_average(file_list: list[str], output_path: str, uint8: bool = 
     cols = ds.RasterXSize
     geotransform = ds.GetGeoTransform()
     projection = ds.GetProjection()
-    
-    # Read first image
-    if bands == 1:
-        first_img = ds.GetRasterBand(1).ReadAsArray()
-    else:
-        first_img = np.stack([ds.GetRasterBand(i + 1).ReadAsArray() for i in range(bands)], axis=0)
-        first_img = np.transpose(first_img, (1, 2, 0))
+    first_img = _read_raster_as_float(ds)
     ds = None
-    
-    # Initialize accumulator
+
+    # Average only over valid pixels so sparse NaNs do not poison the whole output.
     sum_img = np.zeros_like(first_img, dtype=np.float64)
-    count = len(file_list)
-    
-    # Add first image
-    sum_img = sum_img + first_img
-    
+    valid_count = np.zeros_like(first_img, dtype=np.int32)
+
+    first_valid = np.isfinite(first_img)
+    sum_img[first_valid] = first_img[first_valid]
+    valid_count[first_valid] = 1
+
     # Read and accumulate remaining images
     for file_path in file_list[1:]:
         ds = gdal.Open(file_path)
-        if bands == 1:
-            img = ds.GetRasterBand(1).ReadAsArray()
-        else:
-            img = np.stack([ds.GetRasterBand(i + 1).ReadAsArray() for i in range(bands)], axis=0)
-            img = np.transpose(img, (1, 2, 0))
+        img = _read_raster_as_float(ds)
         ds = None
-        sum_img = sum_img + img
+        valid_mask = np.isfinite(img)
+        sum_img[valid_mask] += img[valid_mask]
+        valid_count[valid_mask] += 1
 
-    # Calculate average
-    avg_img = sum_img / count
+    # Calculate average for pixels with at least one valid observation.
+    avg_img = np.full_like(sum_img, np.nan, dtype=np.float32)
+    np.divide(sum_img, valid_count, out=avg_img, where=valid_count > 0)
     
     # Convert to uint8 if needed
     if uint8:
         if len(avg_img.shape) == 2:
-            min_val = np.min(avg_img)
-            max_val = np.max(avg_img)
-            avg_img = (avg_img - min_val) / (max_val - min_val) * 255
-            avg_img = avg_img.astype(np.uint8)
+            finite_mask = np.isfinite(avg_img)
+            if np.any(finite_mask):
+                min_val = np.min(avg_img[finite_mask])
+                max_val = np.max(avg_img[finite_mask])
+                uint8_img = np.zeros_like(avg_img, dtype=np.uint8)
+                if max_val > min_val:
+                    scaled = (avg_img[finite_mask] - min_val) / (max_val - min_val) * 255.0
+                    uint8_img[finite_mask] = scaled.astype(np.uint8)
+                avg_img = uint8_img
+            else:
+                avg_img = np.zeros_like(avg_img, dtype=np.uint8)
         else:
             for band in range(avg_img.shape[2]):
                 band_data = avg_img[:, :, band]
-                min_val = np.min(band_data)
-                max_val = np.max(band_data)
-                band_data = (band_data - min_val) / (max_val - min_val) * 255
-                avg_img[:, :, band] = band_data.astype(np.uint8)
+                finite_mask = np.isfinite(band_data)
+                uint8_band = np.zeros_like(band_data, dtype=np.uint8)
+                if np.any(finite_mask):
+                    min_val = np.min(band_data[finite_mask])
+                    max_val = np.max(band_data[finite_mask])
+                    if max_val > min_val:
+                        scaled = (band_data[finite_mask] - min_val) / (max_val - min_val) * 255.0
+                        uint8_band[finite_mask] = scaled.astype(np.uint8)
+                avg_img[:, :, band] = uint8_band
     
     # Save result
     driver = gdal.GetDriverByName('GTiff')
@@ -2809,14 +2836,20 @@ def calculate_tif_average(file_list: list[str], output_path: str, uint8: bool = 
         out_ds = driver.Create(output_path, cols, rows, 1, data_type)
         out_ds.SetGeoTransform(geotransform)
         out_ds.SetProjection(projection)
-        out_ds.GetRasterBand(1).WriteArray(avg_img)
+        out_band = out_ds.GetRasterBand(1)
+        out_band.WriteArray(avg_img)
+        if not uint8:
+            out_band.SetNoDataValue(np.nan)
     else:
         # Multi band
         out_ds = driver.Create(output_path, cols, rows, bands, data_type)
         out_ds.SetGeoTransform(geotransform)
         out_ds.SetProjection(projection)
         for i in range(bands):
-            out_ds.GetRasterBand(i + 1).WriteArray(avg_img[:, :, i])
+            out_band = out_ds.GetRasterBand(i + 1)
+            out_band.WriteArray(avg_img[:, :, i])
+            if not uint8:
+                out_band.SetNoDataValue(np.nan)
     
     out_ds = None
     return f'Result save at {output_path}'
