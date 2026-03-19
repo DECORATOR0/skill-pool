@@ -1,23 +1,19 @@
-Filename pairing and coverage notes for annual NDVI+LST TVDI trend tasks.
+Decision rules for `ndvi-lst-tvdi-annual-trend`
 
-Pairing rule:
-- Extract the `YYYY-MM-DD` token from each filename.
-- Build `date -> LST filename` and `date -> NDVI filename` maps.
-- Use the sorted intersection of dates.
-- Never fabricate a missing partner file.
+Coverage:
+- Inventory determines coverage, not the prompt alone.
+- Pair only exact matching NDVI/LST dates.
+- Unmatched files are skipped, but reduced coverage must be stated.
+- Example: if 2022-10-16 LST exists but NDVI is missing, keep other matched 2022 dates and report that matched data cover 2019–2022 only if no 2023 pairs exist.
 
-Coverage rule:
-- If the prompt requests years beyond available matched years, compute on available years and say so explicitly.
-- Typical benchmark pattern: data may cover 2019–2022 only, not 2023.
-- Typical discrepancy pattern: one LST date may be present without the NDVI counterpart (for example around 2022-10-16); skip unmatched dates.
+Mean-validation:
+- Preferred annual means: direct `calc_batch_image_mean(file_list=[annual rasters...])`.
+- If direct result is all-NaN or mostly-NaN, retry once.
+- If still invalid, try `uint8=true` once.
+- Reject fallback as implausible when all returned annual means are zero or nearly zero across all years after successful TVDI generation/annual averaging.
+- Never fit a linear trend on `[0, 0, 0, ...]` produced only by lossy fallback from invalid means.
 
-Tool order:
-1. `get_filelist`
-2. `compute_tvdi`
-3. `calculate_tif_average` once per year
-4. `calc_batch_image_mean`
-5. `compute_linear_trend`
-
-Anti-loop rule:
-- After a successful `get_filelist`, never keep calling it to make progress.
-- If the same listing was already seen, continue by parsing filenames and invoking downstream tools.
+Final-answer patterns:
+- Success with partial coverage: `Using matched NDVI/LST data available for 2019–2022, dryness decreased annually (negative slope ...); 2023 is missing from the dataset.`
+- Blocked after invalid means: `Using matched NDVI/LST data available for 2019–2022, annual TVDI mean extraction remained invalid (all-NaN and implausible all-zero uint8 fallback), so no reliable trend was reported.`
+- MCQ tasks: only return the choice label after successful validated trend computation.

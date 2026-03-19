@@ -1,59 +1,61 @@
+from __future__ import annotations
+
 import json
 import os
 import re
 import sys
 from collections import defaultdict
 
-PATTERN = re.compile(r"^(?P<prefix>.+?)_(?P<date>\d{4}-\d{2}-\d{2})_(?P<var>NDVI|LST)\.tif$", re.IGNORECASE)
+DATE_RE = re.compile(r"(\d{4}-\d{2}-\d{2})")
+
+
+def classify(name: str):
+    date_match = DATE_RE.search(name)
+    if not date_match:
+        return None
+    date = date_match.group(1)
+    upper = name.upper()
+    if upper.endswith("_NDVI.TIF"):
+        kind = "NDVI"
+    elif upper.endswith("_LST.TIF"):
+        kind = "LST"
+    else:
+        return None
+    return date, kind
 
 
 def main():
-    payload = json.load(sys.stdin)
-    data_dir = payload["data_dir"]
-    file_list = payload["file_list"]
-    output_subdir = payload.get("output_subdir", "tvdi_out")
-
+    files = json.load(sys.stdin)
     by_date = defaultdict(dict)
-    for name in file_list:
+    for name in files:
         base = os.path.basename(name)
-        m = PATTERN.match(base)
-        if not m:
+        parsed = classify(base)
+        if not parsed:
             continue
-        date = m.group("date")
-        var = m.group("var").upper()
-        by_date[date][var] = os.path.join(data_dir, base)
+        date, kind = parsed
+        by_date[date][kind] = base
 
-    dates = sorted(d for d, vals in by_date.items() if "NDVI" in vals and "LST" in vals)
-    years = sorted({d[:4] for d in dates})
-
-    ndvi_paths = []
-    lst_paths = []
-    tvdi_output_paths = []
-    tvdi_by_year = defaultdict(list)
-
-    for date in dates:
-        year = date[:4]
-        ndvi_paths.append(by_date[date]["NDVI"])
-        lst_paths.append(by_date[date]["LST"])
-        out_rel = f"{output_subdir}/tvdi_{date}.tif"
-        tvdi_output_paths.append(out_rel)
-        tvdi_by_year[year].append(os.path.join("benchmark/out", out_rel))
-
-    annual_average_outputs = {
-        year: os.path.join("benchmark/out", output_subdir, f"tvdi_annual_avg_{year}.tif")
-        for year in years
-    }
+    pairs = []
+    years = defaultdict(list)
+    for date in sorted(by_date):
+        item = by_date[date]
+        if "NDVI" in item and "LST" in item:
+            pair = {
+                "date": date,
+                "year": int(date[:4]),
+                "ndvi_file": item["NDVI"],
+                "lst_file": item["LST"],
+            }
+            pairs.append(pair)
+            years[pair["year"]].append(date)
 
     result = {
-        "matched_dates": dates,
-        "years": years,
-        "ndvi_paths": ndvi_paths,
-        "lst_paths": lst_paths,
-        "tvdi_output_paths": tvdi_output_paths,
-        "tvdi_by_year": {y: tvdi_by_year[y] for y in years},
-        "annual_average_outputs": annual_average_outputs,
+        "pairs": pairs,
+        "years": sorted(years.keys()),
+        "pair_count": len(pairs),
+        "year_to_dates": {str(y): years[y] for y in sorted(years)},
     }
-    json.dump(result, sys.stdout)
+    json.dump(result, sys.stdout, ensure_ascii=False)
 
 
 if __name__ == "__main__":
