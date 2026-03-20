@@ -14,14 +14,14 @@
     "timeout_seconds": 180
   },
   "router": {
-    "model": "gpt-5.4",
+    "model": "Qwen/Qwen3-8B",
     "base_url": "http://35.220.164.252:3888/v1",
     "api_key": "sk-JhritIDG3G8QxS6pPJ1kIfqxWorzSAZgHgkLz4EA0RgFl9lQ",
     "temperature": 0.1,
     "timeout_seconds": 180
   },
   "executor": {
-    "model": "gpt-5.4",
+    "model": "Qwen/Qwen3-8B",
     "base_url": "http://35.220.164.252:3888/v1",
     "api_key": "sk-JhritIDG3G8QxS6pPJ1kIfqxWorzSAZgHgkLz4EA0RgFl9lQ",
     "temperature": 0.1,
