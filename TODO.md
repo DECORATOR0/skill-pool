@@ -160,6 +160,11 @@
   - 2026-03-19 已在 `project_skills/agent/tools/Statistics.py` 修复：读取时把 `nodata` / `inf` 转成 `NaN`；累计时维护 `valid_count`；输出时仅在 `valid_count > 0` 的位置求均值。
   - 修复后验证：`project_skills/runs/debug_q1_after_tool_fix_20260319_01/task_summary.json` 中 q1 已成功；`project_skills/runs/debug_train_first5_after_tool_fix_20260319_01/run_summary.json` 中前五题全部成功。
 
+- [x] 确认 `GDAL runtime is not available in this environment` 这类致命报错的根因是运行目录 / 模块入口错误，而不是 `Statistics.py` 修复回退或 `system.local.json` 配错
+
+  - 2026-03-20 已用同一套 conda 解释器做导入对照：在外层目录 `D:\skills-evo\project_skills` 执行 `import osgeo`，会落到 `E:\miniconda3\envs\earth-bench-skill-eval\Lib\site-packages\osgeo\__init__.py`；在内层目录 `D:\skills-evo\project_skills\project_skills` 执行，则会落到仓库自带的 `D:\skills-evo\project_skills\project_skills\osgeo\__init__.py`。
+  - 结论：再次看到这个致命 GDAL 报错时，先检查当前工作目录是不是外层仓库根目录，以及入口是否写成 `python -m project_skills.nlrl_skills.cli --config "project_skills/configs/system.local.json" ...`，不要先怀疑 GDAL 数值修复文件被回退。
+
 ## 现象记录
 
 - 端到端 monolithic skill 的定位例子：`project_skills/runs/_isolated/train20_empty_skill_library/skill_library/tvdi-annual-trend-from-ndvi-lst/SKILL.md`

@@ -141,6 +141,8 @@ Python 会优先导入本地这个假 `osgeo` 包，而不是 conda 环境里的
 GDAL runtime is not available in this environment. A GDAL-dependent tool was invoked.
 ```
 
+这不是 `system.local.json` 配错，也不是 `project_skills/agent/tools/Statistics.py` 的修复被回退；根因是 Python 导入优先级变了，先吃到了仓库里的假 `osgeo`。
+
 正确做法是：
 
 - 当前工作目录放在外层根目录：`D:\skills-evo\project_skills`
@@ -153,10 +155,29 @@ GDAL runtime is not available in this environment. A GDAL-dependent tool was inv
 conda run -n earth-bench-skill-eval python -m project_skills.nlrl_skills.cli --config "project_skills/configs/system.local.json" <command> [args]
 ```
 
+最小自检方法：
+
+```powershell
+# 正确：外层目录，会导入 conda 环境里的真 osgeo
+cd D:\skills-evo\project_skills
+E:\miniconda3\envs\earth-bench-skill-eval\python.exe -c "import osgeo; print(osgeo.__file__)"
+
+# 错误：内层目录，会导入仓库自带的假 osgeo
+cd D:\skills-evo\project_skills\project_skills
+E:\miniconda3\envs\earth-bench-skill-eval\python.exe -c "import osgeo; print(osgeo.__file__)"
+```
+
 2026-03-18 的 q1 调试已经验证过：
 
 - 外层目录 + `project_skills.nlrl_skills.cli` 能绕开假 `osgeo` 抢导入
 - 屏幕上若只看到 `Cannot find gdalvrt.xsd (GDAL_DATA is not defined)`，这通常只是 GDAL warning，不是之前那个致命导入错误
+
+2026-03-20 再次复核的导入结果是：
+
+- 外层目录：`E:\miniconda3\envs\earth-bench-skill-eval\Lib\site-packages\osgeo\__init__.py`
+- 内层目录：`D:\skills-evo\project_skills\project_skills\osgeo\__init__.py`
+
+因此，后续任何 AI 或协作者如果再次看到这条致命 GDAL 报错，第一反应应该是检查“当前命令是不是在外层目录、是不是走 `project_skills.nlrl_skills.cli`”，而不是先回滚代码或修改配置。
 
 ### 2. 选择配置文件
 
@@ -224,6 +245,8 @@ EO 工具本体仍然来自：
 ## CLI 使用说明
 
 统一入口：
+
+下面所有命令都默认在外层仓库根目录 `D:\skills-evo\project_skills` 执行。不要在内层包目录 `D:\skills-evo\project_skills\project_skills` 中运行 `python -m nlrl_skills.cli`，否则会导入假 `osgeo` 并触发上面的致命 GDAL runtime 报错。
 
 ```powershell
 python -m project_skills.nlrl_skills.cli --config "project_skills/configs/system.local.json" <command> [args]
