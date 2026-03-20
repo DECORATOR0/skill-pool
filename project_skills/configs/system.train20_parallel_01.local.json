@@ -32,8 +32,8 @@
     "workspace_root": "D:/skills-evo/project_skills/project_skills",
     "prompt_root": "D:/skills-evo/project_skills/project_skills/prompts",
     "run_root": "D:/skills-evo/project_skills/project_skills/runs",
-    "skill_library_root": "D:/skills-evo/project_skills/project_skills/skill_library",
-    "experience_buffer_path": "D:/skills-evo/project_skills/project_skills/runtime_state/experience_buffer.jsonl",
+    "skill_library_root": "D:/skills-evo/project_skills/project_skills/runs/_isolated/train20_parallel_01/skill_library",
+    "experience_buffer_path": "D:/skills-evo/project_skills/project_skills/runs/_isolated/train20_parallel_01/experience_buffer.jsonl",
     "dataset_path": "D:/skills-evo/project_skills/project_skills/benchmark/question.json",
     "converted_dataset_path": "D:/skills-evo/project_skills/project_skills/data/converted/earth_bench_skill_rl/question.json",
     "docs_root": "D:/skills-evo/project_skills/project_skills/docs"
