@@ -86,6 +86,7 @@ class EnvRunResult:
     tool_trajectory: list[ToolCallRecord] = field(default_factory=list)
     executor_summary: str = ""
     raw_executor_output: str = ""
+    used_fallback_executor: bool = False
     evaluation: EvaluationResult = field(default_factory=EvaluationResult)
 
 

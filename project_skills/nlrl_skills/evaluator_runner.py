@@ -39,12 +39,13 @@ class SkillPolicyEvaluator:
             write_json(task_dir / "task.json", task.__dict__)
             skill_headers = discover_skills(self.config.skill_library_root)
             try:
-                state = self.environment.run(task, skill_headers, task_dir / "env")
+                state = self.environment.run(task, skill_headers, task_dir / "env", allow_no_skill_fallback=True)
                 record = {
                     "task_id": task.task_id,
                     "original_question_id": task.metadata.get("original_question_id", ""),
                     "selected_skill": state.router_result.selected_skill,
                     "has_applicable_skill": state.router_result.has_applicable_skill,
+                    "used_fallback_executor": state.env_result.used_fallback_executor,
                     "metrics": state.env_result.evaluation.__dict__,
                     "final_answer": state.env_result.final_answer,
                     "final_choice_label": state.env_result.final_choice_label,
@@ -92,6 +93,7 @@ class SkillPolicyEvaluator:
                 for name, metric in metric_aliases.items()
             },
             "success_count": sum(1 for item in per_task_records if item["metrics"].get("task_success")),
+            "fallback_count": sum(1 for item in per_task_records if item.get("used_fallback_executor")),
             "tasks": per_task_records,
         }
         write_json(run_dir / "evaluation_summary.json", summary)
