@@ -7,7 +7,7 @@ from .config import SystemConfig
 from .critic import SkillCritic
 from .data import load_converted_dataset, select_task, select_tasks
 from .environment import SkillEnvironment
-from .schemas import DatasetTask, TrainIterationRecord, to_dict
+from .schemas import DatasetTask, to_dict
 from .skills import discover_skills
 from .utils import ensure_dir, utc_timestamp, write_json
 
@@ -36,7 +36,6 @@ class SkillRLTrainer:
             write_json(iteration_dir / "skill_headers_before.json", [header.__dict__ for header in skill_headers])
             try:
                 state = self.environment.run(task, skill_headers, iteration_dir / "env")
-                reward = self.critic.evaluate(state, iteration_dir / "critic")
             except Exception as exc:
                 write_json(
                     iteration_dir / "iteration_failure.json",
@@ -52,7 +51,6 @@ class SkillRLTrainer:
                     }
                 )
                 break
-            record = TrainIterationRecord(iteration_index=iteration_index, state=state, reward=reward)
 
             if state.env_result.evaluation.task_success:
                 task_success = True
@@ -62,15 +60,36 @@ class SkillRLTrainer:
                         "iteration_index": iteration_index,
                         "status": "task_success",
                         "evaluation": state.env_result.evaluation.__dict__,
-                        "reward": reward.__dict__,
+                        "critic_skipped": True,
+                    },
+                )
+                iteration_records.append(
+                    {
+                        "iteration_index": iteration_index,
+                        "status": "task_success",
+                        "evaluation": state.env_result.evaluation.__dict__,
+                        "critic_skipped": True,
+                        "actor_decision": None,
+                    }
+                )
+                break
+
+            try:
+                reward = self.critic.evaluate(state, iteration_dir / "critic")
+            except Exception as exc:
+                write_json(
+                    iteration_dir / "iteration_failure.json",
+                    {
+                        "iteration_index": iteration_index,
+                        "error": str(exc),
+                        "evaluation": state.env_result.evaluation.__dict__,
                     },
                 )
                 iteration_records.append(
                     {
                         "iteration_index": iteration_index,
                         "evaluation": state.env_result.evaluation.__dict__,
-                        "reward": reward.__dict__,
-                        "actor_decision": None,
+                        "error": str(exc),
                     }
                 )
                 break
@@ -95,7 +114,6 @@ class SkillRLTrainer:
                     }
                 )
                 break
-            record.actor_decision = decision
             write_json(iteration_dir / "skill_headers_after.json", [header.__dict__ for header in discover_skills(self.config.skill_library_root)])
             write_json(
                 iteration_dir / "iteration_summary.json",
