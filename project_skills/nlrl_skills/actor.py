@@ -3,6 +3,8 @@ from __future__ import annotations
 import json
 from pathlib import Path
 
+import yaml
+
 from .config import SystemConfig
 from .llm import OpenAICompatibleLLM, log_llm_call
 from .prompting import render_prompt
@@ -192,7 +194,35 @@ class SkillActor:
             raise ValueError("create_skill requires target_skill_name")
         if decision.action_type == "modify_skill" and not target_skill:
             raise ValueError("modify_skill requires target_skill_name")
-        write_skill_bundle(self.config.skill_library_root, target_skill, decision.files_to_write)
+        write_skill_bundle(
+            self.config.skill_library_root,
+            target_skill,
+            self._normalize_skill_bundle(decision.files_to_write),
+        )
         delete_skill_dirs(self.config.skill_library_root, decision.files_to_delete or decision.merged_from)
         if decision.experience_entry is not None:
             append_experience(self.config.experience_buffer_path, decision.experience_entry)
+
+    def _normalize_skill_bundle(self, files_to_write: dict[str, str]) -> dict[str, str]:
+        normalized = dict(files_to_write)
+        skill_md = normalized.get("SKILL.md")
+        if not skill_md:
+            return normalized
+        normalized["SKILL.md"] = self._ensure_consumption_mode(skill_md)
+        return normalized
+
+    def _ensure_consumption_mode(self, skill_md: str) -> str:
+        text = skill_md.replace("\r\n", "\n")
+        if not text.startswith("---\n"):
+            return skill_md
+        end = text.find("\n---\n", 4)
+        if end == -1:
+            return skill_md
+        frontmatter = text[4:end]
+        body = text[end + 5 :]
+        parsed = yaml.safe_load(frontmatter) or {}
+        if not isinstance(parsed, dict):
+            return skill_md
+        parsed.setdefault("consumption-mode", self.config.runtime.normalized_skill_consumption_mode)
+        updated_frontmatter = yaml.safe_dump(parsed, sort_keys=False, allow_unicode=False).strip()
+        return f"---\n{updated_frontmatter}\n---\n{body.lstrip(chr(10))}"

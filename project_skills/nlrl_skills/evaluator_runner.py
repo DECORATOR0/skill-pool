@@ -45,6 +45,8 @@ class SkillPolicyEvaluator:
                     "original_question_id": task.metadata.get("original_question_id", ""),
                     "selected_skill": state.router_result.selected_skill,
                     "has_applicable_skill": state.router_result.has_applicable_skill,
+                    "execution_mode": state.env_result.execution_mode,
+                    "planned_tool_sequence": state.env_result.planned_tool_sequence,
                     "used_fallback_executor": state.env_result.used_fallback_executor,
                     "metrics": state.env_result.evaluation.__dict__,
                     "final_answer": state.env_result.final_answer,

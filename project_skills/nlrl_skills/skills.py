@@ -39,12 +39,16 @@ def discover_skills(skill_library_root: Path) -> list[SkillHeader]:
                 allowed_tools = [item for item in allowed_raw.split() if item]
             else:
                 allowed_tools = []
+            consumption_mode = str(meta.get("consumption-mode", meta.get("consumption_mode", "executor"))).strip().lower()
+            if consumption_mode not in {"executor", "planner"}:
+                consumption_mode = "executor"
             headers.append(
                 SkillHeader(
                     name=str(meta.get("name", skill_md.parent.name)),
                     description=str(meta.get("description", "")).strip(),
                     skill_dir=str(skill_md.parent.resolve()),
                     skill_md_path=str(skill_md.resolve()),
+                    consumption_mode=consumption_mode,
                     compatibility=str(meta.get("compatibility", "")).strip(),
                     allowed_tools=allowed_tools,
                     metadata=meta.get("metadata", {}) if isinstance(meta.get("metadata", {}), dict) else {},

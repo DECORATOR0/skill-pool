@@ -6,6 +6,7 @@ from pathlib import Path
 from .agent_loop import JSONToolAgent
 from .config import SystemConfig
 from .evaluation import evaluate_execution
+from .planner_runtime import PlannerSkillRuntime
 from .prompting import render_prompt
 from .router import SkillRouter
 from .schemas import DatasetTask, EnvRunResult, EnvState, EvaluationResult, RouterResult, SkillDetail, SkillHeader, to_dict
@@ -29,6 +30,7 @@ class SkillEnvironment:
         )
         self.toolbox = Toolbox(tool_context)
         self.executor_agent = JSONToolAgent(config.executor, config.prompt_root, self.toolbox)
+        self.planner_runtime = PlannerSkillRuntime(config, self.toolbox)
 
     def _pick_active_skill(self, headers: list[SkillHeader], router_result: RouterResult) -> SkillDetail | None:
         if not router_result.selected_skill:
@@ -120,6 +122,7 @@ class SkillEnvironment:
             tool_trajectory=tool_records,
             executor_summary=summary,
             raw_executor_output=raw_output,
+            execution_mode="executor",
             used_fallback_executor=use_fallback_prompt,
         )
         env_result.evaluation = evaluate_execution(
@@ -188,12 +191,15 @@ class SkillEnvironment:
             write_json(run_dir / "state.json", to_dict(state))
             return state
 
-        env_result = self._execute_executor(
-            task,
-            run_dir,
-            active_skill=active_skill,
-            allowed_tools=active_skill.header.allowed_tools or None,
-        )
+        if self.config.runtime.uses_planner_mode:
+            env_result = self.planner_runtime.execute(task, run_dir, active_skill=active_skill)
+        else:
+            env_result = self._execute_executor(
+                task,
+                run_dir,
+                active_skill=active_skill,
+                allowed_tools=active_skill.header.allowed_tools or None,
+            )
         state = EnvState(
             task_id=task.task_id,
             task_prompt=task.prompt,

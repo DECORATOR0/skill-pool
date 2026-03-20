@@ -38,6 +38,7 @@ class SkillHeader:
     description: str
     skill_dir: str
     skill_md_path: str
+    consumption_mode: str = "executor"
     compatibility: str = ""
     allowed_tools: list[str] = field(default_factory=list)
     metadata: dict[str, Any] = field(default_factory=dict)
@@ -86,6 +87,10 @@ class EnvRunResult:
     tool_trajectory: list[ToolCallRecord] = field(default_factory=list)
     executor_summary: str = ""
     raw_executor_output: str = ""
+    execution_mode: str = "executor"
+    planner_summary: str = ""
+    planned_tool_sequence: list[str] = field(default_factory=list)
+    raw_planner_output: str = ""
     used_fallback_executor: bool = False
     evaluation: EvaluationResult = field(default_factory=EvaluationResult)
 

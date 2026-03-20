@@ -53,7 +53,11 @@ class SkillCritic:
                     "env_result": {
                         "final_answer": state.env_result.final_answer,
                         "final_choice_label": state.env_result.final_choice_label,
+                        "execution_mode": state.env_result.execution_mode,
+                        "planner_summary": state.env_result.planner_summary,
+                        "planned_tool_sequence": state.env_result.planned_tool_sequence,
                         "executor_summary": state.env_result.executor_summary,
+                        "raw_planner_output": state.env_result.raw_planner_output,
                         "tool_trajectory": [record.__dict__ for record in state.env_result.tool_trajectory],
                         "evaluation": state.env_result.evaluation.__dict__,
                     },

@@ -34,12 +34,22 @@ class PathsConfig:
 class RuntimeConfig:
     max_router_candidates: int = 64
     skill_match_threshold: float = 80.0
+    skill_consumption_mode: str = "executor"
     max_executor_steps: int = 12
     max_actor_steps: int = 8
     max_iterations_per_task: int = 3
     skill_count_limit: int = 6
     python_executable: str = "python"
     shell_program: str = "powershell"
+
+    @property
+    def normalized_skill_consumption_mode(self) -> str:
+        mode = self.skill_consumption_mode.strip().lower()
+        return mode or "executor"
+
+    @property
+    def uses_planner_mode(self) -> bool:
+        return self.normalized_skill_consumption_mode == "planner"
 
 
 @dataclass
