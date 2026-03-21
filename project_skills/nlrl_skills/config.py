@@ -41,6 +41,7 @@ class RuntimeConfig:
     max_actor_steps: int = 8
     max_iterations_per_task: int = 3
     skill_count_limit: int = 6
+    task_concurrency: int = 1
     python_executable: str = "python"
     shell_program: str = "powershell"
 

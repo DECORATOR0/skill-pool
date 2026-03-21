@@ -80,6 +80,50 @@ def write_skill_bundle(skill_library_root: Path, skill_name: str, files_to_write
     return skill_dir
 
 
+def rename_skill_markdown(
+    full_text: str,
+    new_skill_name: str,
+    *,
+    metadata_updates: dict[str, Any] | None = None,
+) -> str:
+    meta, body = _split_frontmatter(full_text)
+    meta["name"] = slugify(new_skill_name)
+    if not str(meta.get("description", "")).strip():
+        meta["description"] = meta["name"]
+    metadata = meta.get("metadata", {})
+    if not isinstance(metadata, dict):
+        metadata = {}
+    if metadata_updates:
+        metadata.update(metadata_updates)
+    if metadata:
+        meta["metadata"] = metadata
+    rendered_frontmatter = yaml.safe_dump(meta, sort_keys=False, allow_unicode=False).strip()
+    return f"---\n{rendered_frontmatter}\n---\n{body}"
+
+
+def copy_skill_bundle(
+    source_skill_dir: Path,
+    target_skill_library_root: Path,
+    new_skill_name: str,
+    *,
+    metadata_updates: dict[str, Any] | None = None,
+) -> Path:
+    target_skill_dir = target_skill_library_root / slugify(new_skill_name)
+    if target_skill_dir.exists():
+        raise FileExistsError(f"Target skill already exists: {target_skill_dir}")
+    ensure_dir(target_skill_library_root)
+    shutil.copytree(source_skill_dir, target_skill_dir)
+    skill_md_path = target_skill_dir / "SKILL.md"
+    if skill_md_path.exists():
+        updated_skill_md = rename_skill_markdown(
+            read_text(skill_md_path),
+            new_skill_name,
+            metadata_updates=metadata_updates,
+        )
+        write_text(skill_md_path, updated_skill_md)
+    return target_skill_dir
+
+
 def reset_skill_library(skill_library_root: Path) -> None:
     ensure_dir(skill_library_root)
     for child in skill_library_root.iterdir():

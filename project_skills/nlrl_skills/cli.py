@@ -41,6 +41,11 @@ def build_parser() -> argparse.ArgumentParser:
     train_many.add_argument("--reset-skill-library", action="store_true", help="Remove all generated skills before the run.")
     train_many.add_argument("--reset-experience-buffer", action="store_true", help="Clear the NL-Experience Buffer before the run.")
 
+    train_model3 = sub.add_parser("train-model3", help="Run model3 isolated parallel training and keep only successful task skills.")
+    _task_selection_args(train_model3)
+    train_model3.add_argument("--run-name", help="Optional run folder name")
+    train_model3.add_argument("--concurrency", type=int, help="Optional override for task parallelism. Defaults to runtime.task_concurrency.")
+
     evaluate = sub.add_parser("evaluate-tasks", help="Evaluate the current skill library without further training.")
     _task_selection_args(evaluate)
     evaluate.add_argument("--run-name", help="Optional run folder name")
@@ -86,6 +91,18 @@ def main() -> None:
             count=args.count,
             start_index=args.start_index,
             run_name=args.run_name,
+        )
+        print(run_dir)
+        return
+
+    if args.command == "train-model3":
+        trainer = SkillRLTrainer(config)
+        run_dir = trainer.train_tasks_model3(
+            task_ids=args.task_ids,
+            count=args.count,
+            start_index=args.start_index,
+            run_name=args.run_name,
+            concurrency=args.concurrency,
         )
         print(run_dir)
         return

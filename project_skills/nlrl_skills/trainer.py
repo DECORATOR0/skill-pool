@@ -1,6 +1,10 @@
 from __future__ import annotations
 
+from concurrent.futures import ThreadPoolExecutor, as_completed
+from copy import deepcopy
 from pathlib import Path
+import shutil
+import threading
 
 from .actor import SkillActor
 from .config import SystemConfig
@@ -8,8 +12,8 @@ from .critic import SkillCritic
 from .data import load_converted_dataset, select_task, select_tasks
 from .environment import SkillEnvironment
 from .schemas import DatasetTask, to_dict
-from .skills import discover_skills
-from .utils import ensure_dir, utc_timestamp, write_json
+from .skills import copy_skill_bundle, discover_skills
+from .utils import ensure_dir, slugify, utc_timestamp, write_json
 
 
 class SkillRLTrainer:
@@ -24,6 +28,63 @@ class SkillRLTrainer:
         ensure_dir(run_dir)
         write_json(run_dir / "config_snapshot.json", to_dict(self.config))
         return run_dir
+
+    def _clone_config_for_task_runtime(
+        self,
+        *,
+        run_root: Path,
+        skill_library_root: Path,
+        experience_buffer_path: Path,
+    ) -> SystemConfig:
+        cloned = deepcopy(self.config)
+        cloned.paths.run_root = str(run_root).replace("\\", "/")
+        cloned.paths.skill_library_root = str(skill_library_root).replace("\\", "/")
+        cloned.paths.experience_buffer_path = str(experience_buffer_path).replace("\\", "/")
+        return cloned
+
+    def _promoted_skill_name(self, task_label: str, skill_index: int) -> str:
+        return f"{slugify(task_label)}-skill-{skill_index:02d}"
+
+    def _promote_successful_task_skills(
+        self,
+        *,
+        source_skill_library_root: Path,
+        promoted_skill_library_root: Path,
+        task: DatasetTask,
+        task_label: str,
+    ) -> list[dict]:
+        promoted: list[dict] = []
+        original_question_id = str(task.metadata.get("original_question_id", ""))
+        for skill_index, header in enumerate(discover_skills(source_skill_library_root), start=1):
+            promoted_skill_name = self._promoted_skill_name(task_label, skill_index)
+            copy_skill_bundle(
+                Path(header.skill_dir),
+                promoted_skill_library_root,
+                promoted_skill_name,
+                metadata_updates={
+                    "model3_source_task_id": task.task_id,
+                    "model3_source_question_id": original_question_id,
+                    "model3_source_task_label": task_label,
+                    "model3_source_skill_name": header.name,
+                    "model3_promotion_mode": "success_only",
+                },
+            )
+            promoted.append(
+                {
+                    "skill_name": promoted_skill_name,
+                    "source_skill_name": header.name,
+                    "description": header.description,
+                    "source_task_id": task.task_id,
+                    "source_question_id": original_question_id,
+                    "source_task_label": task_label,
+                    "relative_skill_dir": f"successful_skill_library/{promoted_skill_name}",
+                }
+            )
+        return promoted
+
+    def _cleanup_task_runtime(self, task_runtime_root: Path) -> None:
+        if task_runtime_root.exists():
+            shutil.rmtree(task_runtime_root, ignore_errors=True)
 
     def train_task(self, task: DatasetTask, task_run_dir: Path) -> dict:
         write_json(task_run_dir / "task.json", task.__dict__)
@@ -181,6 +242,146 @@ class SkillRLTrainer:
             "task_count": len(selected_tasks),
             "tasks": task_summaries,
             "final_skill_headers": [header.__dict__ for header in discover_skills(self.config.skill_library_root)],
+        }
+        write_json(run_dir / "run_summary.json", run_summary)
+        return run_dir
+
+    def train_tasks_model3(
+        self,
+        *,
+        task_ids: list[str] | None = None,
+        count: int | None = None,
+        start_index: int = 0,
+        run_name: str | None = None,
+        concurrency: int | None = None,
+    ) -> Path:
+        tasks = load_converted_dataset(self.config.converted_dataset_path)
+        selected_tasks = select_tasks(tasks, task_ids=task_ids, count=count, start_index=start_index)
+        run_dir = self.prepare_run_dir(run_name)
+        promoted_skill_library_root = ensure_dir(run_dir / "successful_skill_library")
+        effective_concurrency = max(1, concurrency or self.config.runtime.task_concurrency)
+        if concurrency is not None and concurrency != self.config.runtime.task_concurrency:
+            config_snapshot = to_dict(self.config)
+            runtime_snapshot = config_snapshot.setdefault("runtime", {})
+            if isinstance(runtime_snapshot, dict):
+                runtime_snapshot["task_concurrency"] = effective_concurrency
+            write_json(run_dir / "config_snapshot.json", config_snapshot)
+        write_json(
+            run_dir / "model3_settings.json",
+            {
+                "training_mode": "model3_parallel_success_only",
+                "task_concurrency": effective_concurrency,
+                "max_iterations_per_task": self.config.runtime.max_iterations_per_task,
+                "max_executor_steps": self.config.runtime.max_executor_steps,
+                "promoted_skill_library_root": str(promoted_skill_library_root),
+                "local_task_runtime_pattern": "task_xx/_runtime",
+                "promotion_policy": "successful-task-skills-only",
+                "failed_task_policy": "discard-local-skill-library",
+            },
+        )
+        write_json(
+            run_dir / "selected_tasks.json",
+            [
+                {
+                    "task_id": task.task_id,
+                    "original_question_id": task.metadata.get("original_question_id", ""),
+                    "prompt": task.prompt,
+                }
+                for task in selected_tasks
+            ],
+        )
+
+        task_summaries: list[dict | None] = [None] * len(selected_tasks)
+        promotion_lock = threading.Lock()
+
+        def _run_one_task(index: int, task: DatasetTask) -> tuple[int, dict]:
+            task_label = f"task_{index:02d}_{task.metadata.get('original_question_id', task.task_id)}"
+            task_run_dir = ensure_dir(run_dir / task_label)
+            task_runtime_root = task_run_dir / "_runtime"
+            task_config = self._clone_config_for_task_runtime(
+                run_root=task_runtime_root,
+                skill_library_root=task_runtime_root / "skill_library",
+                experience_buffer_path=task_runtime_root / "experience_buffer.jsonl",
+            )
+
+            try:
+                task_trainer = SkillRLTrainer(task_config)
+                task_summary = task_trainer.train_task(task, task_run_dir)
+            except Exception as exc:
+                task_summary = {
+                    "task_id": task.task_id,
+                    "original_question_id": task.metadata.get("original_question_id", ""),
+                    "task_success": False,
+                    "iterations": [],
+                    "fatal_error": str(exc),
+                    "final_skill_headers": [header.__dict__ for header in discover_skills(task_config.skill_library_root)],
+                }
+
+            promoted_skills: list[dict] = []
+            promotion_error = ""
+            if task_summary.get("task_success"):
+                try:
+                    with promotion_lock:
+                        promoted_skills = self._promote_successful_task_skills(
+                            source_skill_library_root=task_config.skill_library_root,
+                            promoted_skill_library_root=promoted_skill_library_root,
+                            task=task,
+                            task_label=task_label,
+                        )
+                except Exception as exc:
+                    promotion_error = str(exc)
+
+            final_skill_headers = task_summary.get("final_skill_headers", [])
+            task_summary["promoted_skills"] = promoted_skills
+            task_summary["promoted_skill_count"] = len(promoted_skills)
+            task_summary["promotion_error"] = promotion_error
+            task_summary["discarded_generated_skill_count"] = 0 if task_summary.get("task_success") else len(final_skill_headers)
+            task_summary["local_task_runtime_root"] = str(task_runtime_root)
+
+            self._cleanup_task_runtime(task_runtime_root)
+            task_summary["isolated_runtime_cleaned"] = True
+            write_json(task_run_dir / "task_summary.json", task_summary)
+            return index - 1, task_summary
+
+        if selected_tasks:
+            worker_count = min(effective_concurrency, len(selected_tasks))
+            with ThreadPoolExecutor(max_workers=worker_count) as executor:
+                futures = [
+                    executor.submit(_run_one_task, index, task)
+                    for index, task in enumerate(selected_tasks, start=1)
+                ]
+                for future in as_completed(futures):
+                    result_index, task_summary = future.result()
+                    task_summaries[result_index] = task_summary
+
+        resolved_task_summaries = [summary for summary in task_summaries if summary is not None]
+        successful_skill_records = sorted(
+            [
+                skill_record
+                for summary in resolved_task_summaries
+                for skill_record in summary.get("promoted_skills", [])
+            ],
+            key=lambda item: item["skill_name"],
+        )
+        final_skill_headers = [header.__dict__ for header in discover_skills(promoted_skill_library_root)]
+        write_json(
+            run_dir / "successful_skill_summary.json",
+            {
+                "successful_task_count": sum(1 for summary in resolved_task_summaries if summary.get("task_success")),
+                "failed_task_count": sum(1 for summary in resolved_task_summaries if not summary.get("task_success")),
+                "promotion_error_count": sum(1 for summary in resolved_task_summaries if summary.get("promotion_error")),
+                "skill_count": len(successful_skill_records),
+                "successful_skill_library_root": str(promoted_skill_library_root),
+                "skills": successful_skill_records,
+            },
+        )
+        run_summary = {
+            "training_mode": "model3_parallel_success_only",
+            "task_count": len(selected_tasks),
+            "task_concurrency": effective_concurrency,
+            "successful_skill_library_root": str(promoted_skill_library_root),
+            "tasks": resolved_task_summaries,
+            "final_skill_headers": final_skill_headers,
         }
         write_json(run_dir / "run_summary.json", run_summary)
         return run_dir
