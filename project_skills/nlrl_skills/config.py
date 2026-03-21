@@ -16,6 +16,7 @@ class LLMConfig:
     temperature: float = 0.2
     max_tokens: int | None = None
     timeout_seconds: int = 180
+    enable_thinking: bool | None = None
 
 
 @dataclass
@@ -112,6 +113,7 @@ def _llm_from_dict(name: str, data: dict[str, Any]) -> LLMConfig:
         temperature=float(data.get("temperature", 0.2)),
         max_tokens=max_tokens,
         timeout_seconds=int(data.get("timeout_seconds", 180)),
+        enable_thinking=None if "enable_thinking" not in data else bool(data["enable_thinking"]),
     )
 
 

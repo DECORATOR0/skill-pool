@@ -1,6 +1,7 @@
 benchmark/
 project_skills/benchmark/
 project_skills/runs/
+project_skills/_history_cleanup_20260320/
 
 # Python cache / bytecode
 __pycache__/

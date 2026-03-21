@@ -58,6 +58,7 @@ class OpenAICompatibleLLM:
         max_tokens: int | None = None,
         response_format: dict[str, Any] | None = None,
     ) -> LLMCallResult:
+        use_streaming_thinking = self.config.enable_thinking is True
         payload = {
             "model": self.config.model,
             "messages": [{"role": m.role, "content": m.content} for m in messages],
@@ -66,12 +67,19 @@ class OpenAICompatibleLLM:
         resolved_max_tokens = self.config.max_tokens if max_tokens is None else max_tokens
         if resolved_max_tokens is not None:
             payload["max_tokens"] = resolved_max_tokens
-        if response_format is not None:
+        if response_format is not None and not use_streaming_thinking:
             payload["response_format"] = response_format
+        if self.config.enable_thinking is not None:
+            payload["extra_body"] = {"enable_thinking": self.config.enable_thinking}
+        if use_streaming_thinking:
+            payload["stream"] = True
         last_error: Exception | None = None
         for attempt in range(1, self.max_retries + 1):
             try:
-                response = self.client.chat.completions.create(**payload)
+                if use_streaming_thinking:
+                    response = self._streaming_chat(payload)
+                else:
+                    response = self.client.chat.completions.create(**payload)
                 break
             except Exception as exc:  # pragma: no cover - network dependent
                 last_error = exc
@@ -80,11 +88,37 @@ class OpenAICompatibleLLM:
                 time.sleep(self.retry_delay_seconds)
         else:  # pragma: no cover - defensive
             raise RuntimeError(f"LLM call failed: {last_error}")
+        if use_streaming_thinking:
+            return response
         text = ""
         if response.choices:
             message = response.choices[0].message
             text = message.content or ""
         raw_response = json.loads(response.model_dump_json())
+        return LLMCallResult(text=text, raw_response=raw_response, request_payload=payload)
+
+    def _streaming_chat(self, payload: dict[str, Any]) -> LLMCallResult:
+        text_parts: list[str] = []
+        reasoning_parts: list[str] = []
+        chunk_count = 0
+        for chunk in self.client.chat.completions.create(**payload):
+            chunk_count += 1
+            raw_chunk = json.loads(chunk.model_dump_json())
+            for choice in raw_chunk.get("choices", []):
+                delta = choice.get("delta", {}) or {}
+                content = delta.get("content")
+                if isinstance(content, str):
+                    text_parts.append(content)
+                reasoning = delta.get("reasoning_content")
+                if isinstance(reasoning, str):
+                    reasoning_parts.append(reasoning)
+        text = "".join(text_parts)
+        raw_response = {
+            "stream": True,
+            "chunk_count": chunk_count,
+            "content": text,
+            "reasoning_content": "".join(reasoning_parts),
+        }
         return LLMCallResult(text=text, raw_response=raw_response, request_payload=payload)
 
     def chat_json(
