@@ -5,7 +5,7 @@ from dataclasses import dataclass
 from pathlib import Path
 from typing import Any
 
-from project_skills.agent.skill_eval.parameter_worker import choose_tool_arguments
+from project_skills.agent.skill_eval.parameter_worker import WorkerModelConfig, choose_tool_arguments
 
 from .config import SystemConfig
 from .evaluation import evaluate_execution
@@ -26,8 +26,19 @@ class PlannerSkillRuntime:
     def __init__(self, config: SystemConfig, toolbox: Toolbox):
         self.config = config
         self.toolbox = toolbox
-        self.planner_llm = OpenAICompatibleLLM(config.executor)
+        planner_config = config.planner or config.executor
+        self.planner_llm = OpenAICompatibleLLM(planner_config)
         self.answer_selector_llm = OpenAICompatibleLLM(config.executor)
+        parameter_worker_config = config.parameter_worker or config.executor
+        self.parameter_worker_config = WorkerModelConfig(
+            model=parameter_worker_config.model,
+            base_url=parameter_worker_config.base_url,
+            backup_url=parameter_worker_config.backup_url or parameter_worker_config.base_url,
+            api_key=parameter_worker_config.api_key,
+            timeout_seconds=parameter_worker_config.timeout_seconds,
+            max_tokens=parameter_worker_config.max_tokens,
+            enable_thinking=parameter_worker_config.enable_thinking,
+        )
 
     def _default_tool_specs(self) -> list[ToolSpec]:
         return [spec for spec in self.toolbox.specs() if spec.source != "built_in"]
@@ -169,6 +180,7 @@ class PlannerSkillRuntime:
         latest_observation = ""
 
         self.toolbox.set_active_skill_dir(active_skill.header.skill_dir)
+        self.toolbox.set_active_task_data_dir(task.data_dir)
         try:
             for step_index, planned_step in enumerate(planned_steps, start=1):
                 worker_prompt = self._build_worker_prompt(
@@ -179,27 +191,39 @@ class PlannerSkillRuntime:
                     prior_steps=prior_steps,
                     latest_observation=latest_observation,
                 )
+                decision = None
+                worker_rationale = ""
+                raw_arguments: dict[str, Any] = {}
                 try:
                     decision = choose_tool_arguments(
                         worker_prompt,
                         planned_tool_name=planned_step.tool_name,
+                        worker_config=self.parameter_worker_config,
                     )
-                    raw_result = self.toolbox.execute(planned_step.tool_name, decision.arguments)
-                    observation = json.dumps(raw_result, ensure_ascii=False, default=str)
-                    success = True
-                    error = ""
+                    raw_arguments = decision.arguments if isinstance(decision.arguments, dict) else {}
+                    worker_rationale = decision.rationale
                 except Exception as exc:
-                    decision = None
                     raw_result = {"error": str(exc)}
                     observation = json.dumps(raw_result, ensure_ascii=False)
                     success = False
                     error = str(exc)
+                else:
+                    try:
+                        raw_result = self.toolbox.execute(planned_step.tool_name, raw_arguments)
+                        observation = json.dumps(raw_result, ensure_ascii=False, default=str)
+                        success = True
+                        error = ""
+                    except Exception as exc:
+                        raw_result = {"error": str(exc)}
+                        observation = json.dumps(raw_result, ensure_ascii=False)
+                        success = False
+                        error = str(exc)
                 records.append(
                     ToolCallRecord(
                         step_index=step_index,
-                        thought=planned_step.reason if decision is None else decision.rationale or planned_step.reason,
+                        thought=worker_rationale or planned_step.reason,
                         tool_name=planned_step.tool_name,
-                        arguments={} if decision is None else decision.arguments,
+                        arguments=raw_arguments,
                         observation=observation,
                         success=success,
                         raw_result=raw_result,
@@ -213,8 +237,8 @@ class PlannerSkillRuntime:
                         "planned_tool_name": planned_step.tool_name,
                         "planner_reason": planned_step.reason,
                         "worker_prompt": worker_prompt,
-                        "arguments": {} if decision is None else decision.arguments,
-                        "worker_rationale": "" if decision is None else decision.rationale,
+                        "arguments": raw_arguments,
+                        "worker_rationale": worker_rationale,
                         "success": success,
                         "raw_result": raw_result,
                         "error": error,
@@ -226,6 +250,7 @@ class PlannerSkillRuntime:
                     break
         finally:
             self.toolbox.set_active_skill_dir(None)
+            self.toolbox.set_active_task_data_dir(None)
         return records
 
     def _selection_user_prompt(

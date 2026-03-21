@@ -84,6 +84,7 @@ class SkillEnvironment:
             max_steps=self.config.runtime.max_executor_steps,
         )
         self.toolbox.set_active_skill_dir(None if active_skill is None else active_skill.header.skill_dir)
+        self.toolbox.set_active_task_data_dir(task.data_dir)
         try:
             task_json = self._executor_task_json(task)
             if use_fallback_prompt:
@@ -111,6 +112,7 @@ class SkillEnvironment:
             )
         finally:
             self.toolbox.set_active_skill_dir(None)
+            self.toolbox.set_active_task_data_dir(None)
 
         summary = str(final_payload.get("summary", ""))
         if use_fallback_prompt:

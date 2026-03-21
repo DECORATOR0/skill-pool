@@ -199,15 +199,54 @@ class EOToolRuntime:
             or "image_list" in normalized
         )
 
-    def _resolve_workspace_input_path(self, value: str) -> str:
-        normalized = value.replace("\\", "/").strip()
+    def _normalize_path_key(self, value: str) -> str:
+        return value.replace("\\", "/").strip()
+
+    def _resolve_workspace_input_path(
+        self,
+        value: str,
+        *,
+        data_dir: Path | None = None,
+        path_aliases: dict[str, str] | None = None,
+    ) -> str:
+        normalized = self._normalize_path_key(value)
         if not normalized:
             return value
+        if path_aliases:
+            aliased = path_aliases.get(normalized)
+            if aliased:
+                return aliased
         if Path(normalized).is_absolute():
             return str(Path(normalized))
-        return str(_workspace_relative_path(self.workspace_root, normalized))
+        workspace_candidate = _workspace_relative_path(self.workspace_root, normalized)
+        if workspace_candidate.exists():
+            return str(workspace_candidate)
+        if data_dir is not None:
+            try:
+                data_candidate = _workspace_relative_path(data_dir, normalized)
+            except ValueError:
+                data_candidate = None
+            if data_candidate is not None and data_candidate.exists():
+                return str(data_candidate)
+        temp_candidate = _workspace_relative_path(self.temp_root, normalized)
+        if temp_candidate.exists():
+            return str(temp_candidate)
+        for child in self.temp_root.iterdir():
+            if not child.is_dir():
+                continue
+            child_candidate = _workspace_relative_path(child, normalized)
+            if child_candidate.exists():
+                return str(child_candidate)
+        return str(workspace_candidate)
 
-    def _normalize_argument(self, param_name: str, value: Any) -> Any:
+    def _normalize_argument(
+        self,
+        param_name: str,
+        value: Any,
+        *,
+        data_dir: Path | None = None,
+        path_aliases: dict[str, str] | None = None,
+    ) -> Any:
         if isinstance(value, str):
             stripped = value.strip()
             if stripped.startswith("[") and stripped.endswith("]"):
@@ -220,12 +259,14 @@ class EOToolRuntime:
                         value = parsed
                         break
         if isinstance(value, str) and self._is_input_path_argument(param_name):
-            return self._resolve_workspace_input_path(value)
+            return self._resolve_workspace_input_path(value, data_dir=data_dir, path_aliases=path_aliases)
         if isinstance(value, list) and (
             self._is_input_path_list_argument(param_name) or self._is_input_path_argument(param_name)
         ):
             return [
-                self._resolve_workspace_input_path(item) if isinstance(item, str) else item
+                self._resolve_workspace_input_path(item, data_dir=data_dir, path_aliases=path_aliases)
+                if isinstance(item, str)
+                else item
                 for item in value
             ]
         return value
@@ -320,9 +361,16 @@ class EOToolRuntime:
             return [self._normalize_tool_result(item) for item in result]
         return result
 
-    def _execute_compute_tvdi(self, func: Callable[..., Any], arguments: dict[str, Any]) -> Any:
+    def _execute_compute_tvdi(
+        self,
+        func: Callable[..., Any],
+        arguments: dict[str, Any],
+        *,
+        data_dir: Path | None = None,
+        path_aliases: dict[str, str] | None = None,
+    ) -> Any:
         accepted = {
-            name: self._normalize_argument(name, arguments[name])
+            name: self._normalize_argument(name, arguments[name], data_dir=data_dir, path_aliases=path_aliases)
             for name in ("ndvi_path", "lst_path", "output_path")
             if name in arguments
         }
@@ -353,18 +401,35 @@ class EOToolRuntime:
             )
         return outputs
 
-    def execute(self, tool_name: str, arguments: dict[str, Any]) -> Any:
+    def execute(
+        self,
+        tool_name: str,
+        arguments: dict[str, Any],
+        *,
+        data_dir: Path | None = None,
+        path_aliases: dict[str, str] | None = None,
+    ) -> Any:
         if tool_name not in self._registry:
             raise KeyError(f"Unknown EO tool: {tool_name}")
         func = self._registry[tool_name].callable
         if tool_name == "compute_tvdi":
-            return self._execute_compute_tvdi(func, arguments)
+            return self._execute_compute_tvdi(
+                func,
+                arguments,
+                data_dir=data_dir,
+                path_aliases=path_aliases,
+            )
         accepted: dict[str, Any] = {}
         sig = inspect.signature(func)
         for param_name, param in sig.parameters.items():
             if param.kind in (inspect.Parameter.POSITIONAL_OR_KEYWORD, inspect.Parameter.KEYWORD_ONLY):
                 if param_name in arguments:
-                    accepted[param_name] = self._normalize_argument(param_name, arguments[param_name])
+                    accepted[param_name] = self._normalize_argument(
+                        param_name,
+                        arguments[param_name],
+                        data_dir=data_dir,
+                        path_aliases=path_aliases,
+                    )
         return self._normalize_tool_result(func(**accepted))
 
 
@@ -377,6 +442,8 @@ class ToolContext:
     shell_program: str = "powershell"
     eo_runtime: EOToolRuntime | None = None
     active_skill_dir: Path | None = None
+    active_task_data_dir: Path | None = None
+    path_aliases: dict[str, str] = field(default_factory=dict)
 
     def __post_init__(self) -> None:
         ensure_dir(self.workspace_root)
@@ -407,6 +474,19 @@ class Toolbox:
     def set_active_skill_dir(self, skill_dir: str | Path | None) -> None:
         self.context.active_skill_dir = None if skill_dir is None else Path(skill_dir).resolve()
 
+    def set_active_task_data_dir(self, data_dir: str | Path | None) -> None:
+        if data_dir is None or str(data_dir).strip() == "":
+            self.context.active_task_data_dir = None
+            self.context.path_aliases.clear()
+            return
+        target = Path(str(data_dir).strip())
+        if target.is_absolute():
+            resolved = target.resolve()
+        else:
+            resolved = _workspace_relative_path(self.context.workspace_root, str(data_dir)).resolve()
+        self.context.active_task_data_dir = resolved
+        self.context.path_aliases.clear()
+
     def _resolve_workspace_path(self, user_path: str, *, prefer_existing: bool = True) -> Path:
         normalized = user_path.replace("\\", "/").strip()
         skill_dir = self.context.active_skill_dir
@@ -425,9 +505,48 @@ class Toolbox:
 
     def _wrap_eo_tool(self, tool_name: str) -> Callable[..., Any]:
         def _call(**kwargs: Any) -> Any:
-            return self.context.eo_runtime.execute(tool_name, kwargs)
+            return self.context.eo_runtime.execute(
+                tool_name,
+                kwargs,
+                data_dir=self.context.active_task_data_dir,
+                path_aliases=self.context.path_aliases,
+            )
 
         return _call
+
+    def _is_output_argument(self, param_name: str) -> bool:
+        normalized = param_name.lower()
+        return any(token in normalized for token in ("output", "save", "result"))
+
+    def _normalize_path_key(self, value: str) -> str:
+        return value.replace("\\", "/").strip()
+
+    def _record_output_aliases(self, tool_name: str, arguments: dict[str, Any], result: Any) -> None:
+        spec = self._registry[tool_name]
+        if spec.source == "built_in":
+            return
+        output_paths: list[str] = []
+        for name, value in arguments.items():
+            if not self._is_output_argument(name):
+                continue
+            if isinstance(value, str):
+                output_paths.append(value)
+            elif isinstance(value, list):
+                output_paths.extend(item for item in value if isinstance(item, str))
+        if not output_paths:
+            return
+        if isinstance(result, str):
+            resolved_paths = [result]
+        elif isinstance(result, list):
+            resolved_paths = [item for item in result if isinstance(item, str)]
+        else:
+            return
+        if len(output_paths) != len(resolved_paths):
+            return
+        for raw_output, resolved_output in zip(output_paths, resolved_paths, strict=True):
+            normalized = self._normalize_path_key(raw_output)
+            if normalized:
+                self.context.path_aliases[normalized] = resolved_output
 
     def _register_builtin_tools(self) -> None:
         self._register(
@@ -541,7 +660,9 @@ class Toolbox:
     def execute(self, tool_name: str, arguments: dict[str, Any]) -> Any:
         if tool_name not in self._registry:
             raise KeyError(f"Unknown tool: {tool_name}")
-        return self._registry[tool_name].callable(**arguments)
+        result = self._registry[tool_name].callable(**arguments)
+        self._record_output_aliases(tool_name, arguments, result)
+        return result
 
     def tool_prompt(self, allowed_tools: list[str] | None = None) -> str:
         return "\n".join(spec.prompt_entry() for spec in self.specs(allowed_tools))

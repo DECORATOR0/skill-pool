@@ -3,7 +3,8 @@ param(
     [int]$StartIndex = 0,
     [int]$Count = 0,
     [switch]$SkipReset,
-    [string]$RunTag = ""
+    [string]$RunTag = "",
+    [string]$ConfigPath = ""
 )
 
 Set-StrictMode -Version Latest
@@ -11,7 +12,7 @@ $ErrorActionPreference = "Stop"
 
 $PackageRoot = (Resolve-Path (Join-Path $PSScriptRoot "..")).Path
 $RepoRoot = (Resolve-Path (Join-Path $PackageRoot "..")).Path
-$ConfigPath = Join-Path $PackageRoot "configs\system.dualmode_mode2.local.json"
+$ConfigPath = if ($ConfigPath) { $ConfigPath } else { Join-Path $PackageRoot "configs\system.dualmode_mode2.local.json" }
 $Config = Get-Content -Raw $ConfigPath | ConvertFrom-Json
 $PythonExe = if ($Config.runtime.python_executable) { $Config.runtime.python_executable } else { "python" }
 $Stamp = Get-Date -Format "yyyyMMdd_HHmm"

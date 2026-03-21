@@ -8,7 +8,8 @@ import json
 import logging
 import re
 import time
-from dataclasses import dataclass
+from dataclasses import dataclass, replace
+from functools import lru_cache
 from typing import Any
 
 import httpx
@@ -34,6 +35,17 @@ PARAMETER_MODEL_ENABLE_THINKING = getattr(skill_eval_config, "PARAMETER_MODEL_EN
 _TOOL_MAP: dict[str, ToolMeta] | None = None
 
 
+@dataclass(frozen=True)
+class WorkerModelConfig:
+    model: str
+    base_url: str
+    backup_url: str
+    api_key: str
+    timeout_seconds: int
+    max_tokens: int | None = None
+    enable_thinking: bool | None = None
+
+
 class WorkerRequestError(RuntimeError):
     def __init__(self, message: str, *, raw_response: str = "", cleaned_response: str = "") -> None:
         super().__init__(message)
@@ -51,7 +63,19 @@ class WorkerDecision:
     model: str = ""
 
 
-def _client(base_url: str) -> OpenAI:
+DEFAULT_WORKER_MODEL_CONFIG = WorkerModelConfig(
+    model=PARAMETER_MODEL_NAME,
+    base_url=PARAMETER_MODEL_BASE_URL,
+    backup_url=PARAMETER_MODEL_BACKUP_URL,
+    api_key=PARAMETER_MODEL_API_KEY,
+    timeout_seconds=PARAMETER_REQUEST_TIMEOUT,
+    max_tokens=None if PARAMETER_MODEL_CONTEXT_WINDOW is _MISSING else PARAMETER_MODEL_CONTEXT_WINDOW,
+    enable_thinking=None if PARAMETER_MODEL_ENABLE_THINKING is _MISSING else PARAMETER_MODEL_ENABLE_THINKING,
+)
+
+
+@lru_cache(maxsize=16)
+def _client(base_url: str, api_key: str, timeout_seconds: int) -> OpenAI:
     trust_env = not (
         "127.0.0.1" in base_url
         or "localhost" in base_url
@@ -66,14 +90,23 @@ def _client(base_url: str) -> OpenAI:
     )
     return OpenAI(
         base_url=base_url,
-        api_key=PARAMETER_MODEL_API_KEY,
-        timeout=PARAMETER_REQUEST_TIMEOUT,
-        http_client=httpx.Client(timeout=PARAMETER_REQUEST_TIMEOUT, trust_env=trust_env),
+        api_key=api_key,
+        timeout=timeout_seconds,
+        http_client=httpx.Client(timeout=timeout_seconds, trust_env=trust_env),
     )
 
-
-_primary = _client(PARAMETER_MODEL_BASE_URL)
-_backup = _client(PARAMETER_MODEL_BACKUP_URL)
+def _resolve_worker_config(
+    *,
+    model: str,
+    worker_config: WorkerModelConfig | None,
+) -> WorkerModelConfig:
+    if worker_config is None:
+        if model == DEFAULT_WORKER_MODEL_CONFIG.model:
+            return DEFAULT_WORKER_MODEL_CONFIG
+        return replace(DEFAULT_WORKER_MODEL_CONFIG, model=model)
+    if model != DEFAULT_WORKER_MODEL_CONFIG.model and model != worker_config.model:
+        return replace(worker_config, model=model)
+    return worker_config
 
 
 def _strip_qwen_think_blocks(raw: str) -> str:
@@ -169,7 +202,7 @@ def _tool_call_schema(tool_name: str) -> list[dict[str, Any]] | None:
 
 def _build_request_kwargs(
     user_prompt: str,
-    model: str,
+    worker_config: WorkerModelConfig,
     *,
     compatibility_mode: bool,
     planned_tool_name: str | None,
@@ -190,7 +223,7 @@ def _build_request_kwargs(
         )
     )
     kwargs: dict[str, Any] = {
-        "model": model,
+        "model": worker_config.model,
         "messages": [
             {"role": "system", "content": system_content},
             {"role": "user", "content": user_prompt},
@@ -206,10 +239,10 @@ def _build_request_kwargs(
                 "function": {"name": planned_tool_name},
             }
     if not compatibility_mode:
-        if PARAMETER_MODEL_ENABLE_THINKING is not _MISSING:
-            kwargs["extra_body"] = {"enable_thinking": PARAMETER_MODEL_ENABLE_THINKING}
-        if PARAMETER_MODEL_CONTEXT_WINDOW is not _MISSING and PARAMETER_MODEL_CONTEXT_WINDOW != -1:
-            kwargs["max_tokens"] = PARAMETER_MODEL_CONTEXT_WINDOW
+        if worker_config.enable_thinking is not None:
+            kwargs["extra_body"] = {"enable_thinking": worker_config.enable_thinking}
+        if worker_config.max_tokens is not None and worker_config.max_tokens != -1:
+            kwargs["max_tokens"] = worker_config.max_tokens
     return kwargs
 
 
@@ -348,7 +381,24 @@ def _normalize_worker_payload(data: dict[str, Any]) -> dict[str, Any]:
     }
 
 
-def _request_worker_payload(user_prompt: str, *, model: str, planned_tool_name: str | None = None) -> dict[str, Any]:
+def _request_worker_payload(
+    user_prompt: str,
+    *,
+    model: str,
+    worker_config: WorkerModelConfig | None = None,
+    planned_tool_name: str | None = None,
+) -> dict[str, Any]:
+    resolved_config = _resolve_worker_config(model=model, worker_config=worker_config)
+    primary_client = _client(
+        resolved_config.base_url,
+        resolved_config.api_key,
+        resolved_config.timeout_seconds,
+    )
+    backup_client = _client(
+        resolved_config.backup_url,
+        resolved_config.api_key,
+        resolved_config.timeout_seconds,
+    )
     last_err = None
     last_raw = ""
     last_cleaned = ""
@@ -358,23 +408,23 @@ def _request_worker_payload(user_prompt: str, *, model: str, planned_tool_name: 
         try:
             kwargs = _build_request_kwargs(
                 user_prompt,
-                model,
+                resolved_config,
                 compatibility_mode=False,
                 planned_tool_name=planned_tool_name,
                 use_tool_calling=True,
             )
             try:
-                resp = _primary.chat.completions.create(**kwargs)
+                resp = primary_client.chat.completions.create(**kwargs)
             except Exception as exc:
                 if not _is_bad_request(exc):
                     raise
                 log.warning(
                     "Parameter worker got 400 with tool-calling/optional args on primary endpoint; retrying in compatibility mode."
                 )
-                resp = _primary.chat.completions.create(
+                resp = primary_client.chat.completions.create(
                     **_build_request_kwargs(
                         user_prompt,
-                        model,
+                        resolved_config,
                         compatibility_mode=True,
                         planned_tool_name=planned_tool_name,
                         use_tool_calling=True,
@@ -385,7 +435,7 @@ def _request_worker_payload(user_prompt: str, *, model: str, planned_tool_name: 
                 normalized = _normalize_worker_payload(tool_call_payload)
                 normalized["raw_response"] = tool_call_payload.get("raw_response", "")
                 normalized["cleaned_response"] = tool_call_payload.get("cleaned_response", "")
-                normalized["model"] = model
+                normalized["model"] = resolved_config.model
                 return normalized
             content = resp.choices[0].message.content or ""
             raw_content = content
@@ -393,7 +443,7 @@ def _request_worker_payload(user_prompt: str, *, model: str, planned_tool_name: 
             normalized = _normalize_worker_payload(_parse_worker_payload(content))
             normalized["raw_response"] = content
             normalized["cleaned_response"] = cleaned_content
-            normalized["model"] = model
+            normalized["model"] = resolved_config.model
             return normalized
         except Exception as exc:
             if raw_content:
@@ -407,7 +457,7 @@ def _request_worker_payload(user_prompt: str, *, model: str, planned_tool_name: 
                 "Parameter worker network attempt %d/%d failed (%s): %s",
                 attempt + 1,
                 PRIMARY_RETRY_COUNT,
-                _primary.base_url,
+                primary_client.base_url,
                 exc,
             )
             if attempt < PRIMARY_RETRY_COUNT - 1:
@@ -417,23 +467,23 @@ def _request_worker_payload(user_prompt: str, *, model: str, planned_tool_name: 
     try:
         kwargs = _build_request_kwargs(
             user_prompt,
-            model,
+            resolved_config,
             compatibility_mode=False,
             planned_tool_name=planned_tool_name,
             use_tool_calling=True,
         )
         try:
-            resp = _backup.chat.completions.create(**kwargs)
+            resp = backup_client.chat.completions.create(**kwargs)
         except Exception as exc:
             if not _is_bad_request(exc):
                 raise
             log.warning(
                 "Parameter worker got 400 with tool-calling/optional args on backup endpoint; retrying in compatibility mode."
             )
-            resp = _backup.chat.completions.create(
+            resp = backup_client.chat.completions.create(
                 **_build_request_kwargs(
                     user_prompt,
-                    model,
+                    resolved_config,
                     compatibility_mode=True,
                     planned_tool_name=planned_tool_name,
                     use_tool_calling=True,
@@ -444,7 +494,7 @@ def _request_worker_payload(user_prompt: str, *, model: str, planned_tool_name: 
             normalized = _normalize_worker_payload(tool_call_payload)
             normalized["raw_response"] = tool_call_payload.get("raw_response", "")
             normalized["cleaned_response"] = tool_call_payload.get("cleaned_response", "")
-            normalized["model"] = model
+            normalized["model"] = resolved_config.model
             return normalized
         content = resp.choices[0].message.content or ""
         raw_content = content
@@ -452,7 +502,7 @@ def _request_worker_payload(user_prompt: str, *, model: str, planned_tool_name: 
         normalized = _normalize_worker_payload(_parse_worker_payload(content))
         normalized["raw_response"] = content
         normalized["cleaned_response"] = cleaned_content
-        normalized["model"] = model
+        normalized["model"] = resolved_config.model
         return normalized
     except Exception as exc:
         if raw_content:
@@ -462,8 +512,8 @@ def _request_worker_payload(user_prompt: str, *, model: str, planned_tool_name: 
         if is_retryable_network_error(exc):
             raise NetworkCallError(
                 stage="parameter-worker",
-                model=model,
-                base_url=str(_backup.base_url),
+                model=resolved_config.model,
+                base_url=str(backup_client.base_url),
                 attempts=PRIMARY_RETRY_COUNT,
                 last_error=str(exc),
                 raw_response=last_raw,
@@ -476,8 +526,18 @@ def _request_worker_payload(user_prompt: str, *, model: str, planned_tool_name: 
         ) from exc
 
 
-def choose_next_tool_call(user_prompt: str, *, model: str = PARAMETER_MODEL_NAME) -> WorkerDecision:
-    data = _request_worker_payload(user_prompt, model=model, planned_tool_name=None)
+def choose_next_tool_call(
+    user_prompt: str,
+    *,
+    model: str = PARAMETER_MODEL_NAME,
+    worker_config: WorkerModelConfig | None = None,
+) -> WorkerDecision:
+    data = _request_worker_payload(
+        user_prompt,
+        model=model,
+        worker_config=worker_config,
+        planned_tool_name=None,
+    )
     return WorkerDecision(
         tool_name=data["tool_name"],
         arguments=data.get("arguments", {}),
@@ -493,8 +553,14 @@ def choose_tool_arguments(
     *,
     planned_tool_name: str,
     model: str = PARAMETER_MODEL_NAME,
+    worker_config: WorkerModelConfig | None = None,
 ) -> WorkerDecision:
-    data = _request_worker_payload(user_prompt, model=model, planned_tool_name=planned_tool_name)
+    data = _request_worker_payload(
+        user_prompt,
+        model=model,
+        worker_config=worker_config,
+        planned_tool_name=planned_tool_name,
+    )
     # The plan is fixed by the skill planner; use the returned args/reason but
     # pin the actual tool name to the planned next step.
     return WorkerDecision(

@@ -13,9 +13,11 @@ class LLMConfig:
     model: str
     base_url: str
     api_key: str
+    backup_url: str | None = None
     temperature: float = 0.2
     max_tokens: int | None = None
     timeout_seconds: int = 180
+    enable_thinking: bool | None = None
 
 
 @dataclass
@@ -59,6 +61,8 @@ class SystemConfig:
     router: LLMConfig
     executor: LLMConfig
     paths: PathsConfig
+    planner: LLMConfig | None = None
+    parameter_worker: LLMConfig | None = None
     runtime: RuntimeConfig = field(default_factory=RuntimeConfig)
 
     @property
@@ -96,9 +100,8 @@ class SystemConfig:
 
 def _llm_from_dict(name: str, data: dict[str, Any]) -> LLMConfig:
     max_tokens: int | None = None
-    if name == "router":
-        if "max_tokens" in data and data["max_tokens"] is not None:
-            max_tokens = int(data["max_tokens"])
+    if "max_tokens" in data:
+        max_tokens = None if data["max_tokens"] is None else int(data["max_tokens"])
     elif name == "executor":
         if "max_tokens" in data:
             max_tokens = None if data["max_tokens"] is None else int(data["max_tokens"])
@@ -109,9 +112,11 @@ def _llm_from_dict(name: str, data: dict[str, Any]) -> LLMConfig:
         model=data["model"],
         base_url=data["base_url"],
         api_key=data["api_key"],
+        backup_url=data.get("backup_url"),
         temperature=float(data.get("temperature", 0.2)),
         max_tokens=max_tokens,
         timeout_seconds=int(data.get("timeout_seconds", 180)),
+        enable_thinking=None if "enable_thinking" not in data else bool(data["enable_thinking"]),
     )
 
 
@@ -122,6 +127,10 @@ def load_system_config(path: str | Path) -> SystemConfig:
         critic=_llm_from_dict("critic", raw["critic"]),
         router=_llm_from_dict("router", raw["router"]),
         executor=_llm_from_dict("executor", raw["executor"]),
+        planner=None if "planner" not in raw else _llm_from_dict("planner", raw["planner"]),
+        parameter_worker=None
+        if "parameter_worker" not in raw
+        else _llm_from_dict("parameter_worker", raw["parameter_worker"]),
         paths=PathsConfig(**raw["paths"]),
         runtime=RuntimeConfig(**raw.get("runtime", {})),
     )
