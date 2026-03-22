@@ -45,6 +45,7 @@ def build_parser() -> argparse.ArgumentParser:
     _task_selection_args(train_model3)
     train_model3.add_argument("--run-name", help="Optional run folder name")
     train_model3.add_argument("--concurrency", type=int, help="Optional override for task parallelism. Defaults to runtime.task_concurrency.")
+    train_model3.add_argument("--resume", action="store_true", help="Resume an existing model3 run by skipping tasks that already have task_summary.json.")
 
     evaluate = sub.add_parser("evaluate-tasks", help="Evaluate the current skill library without further training.")
     _task_selection_args(evaluate)
@@ -103,6 +104,7 @@ def main() -> None:
             start_index=args.start_index,
             run_name=args.run_name,
             concurrency=args.concurrency,
+            resume=args.resume,
         )
         print(run_dir)
         return

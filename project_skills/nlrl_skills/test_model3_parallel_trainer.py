@@ -160,3 +160,122 @@ def test_train_tasks_model3_promotes_successful_task_skills_only(tmp_path: Path,
     assert '"promoted_skill_count": 0' in task_two_summary
     assert not (run_dir / "task_01_2" / "_runtime").exists()
     assert not (run_dir / "task_02_3" / "_runtime").exists()
+
+
+def test_train_tasks_model3_resume_skips_completed_tasks_and_reruns_pending(tmp_path: Path, monkeypatch) -> None:
+    dataset_path = _write_dataset(tmp_path)
+    config = _make_config(tmp_path, dataset_path)
+    trainer = SkillRLTrainer(config)
+    run_dir = trainer.prepare_run_dir("model3_resume_test")
+    write_json(
+        run_dir / "selected_tasks.json",
+        [
+            {
+                "task_id": "earth-bench-c-2",
+                "original_question_id": "2",
+                "prompt": "Task two",
+            },
+            {
+                "task_id": "earth-bench-c-3",
+                "original_question_id": "3",
+                "prompt": "Task three",
+            },
+        ],
+    )
+    existing_promoted_dir = write_skill_bundle(
+        run_dir / "successful_skill_library",
+        "task-01-2-skill-01",
+        {
+            "SKILL.md": (
+                "---\n"
+                "name: task-01-2-skill-01\n"
+                "description: Existing promoted skill.\n"
+                "consumption-mode: planner\n"
+                "allowed-tools: get_filelist\n"
+                "metadata:\n"
+                "  model3_source_task_id: earth-bench-c-2\n"
+                "  model3_source_skill_name: existing-skill\n"
+                "---\n"
+                "# Existing\n"
+            )
+        },
+    )
+    assert existing_promoted_dir.exists()
+    task_one_dir = run_dir / "task_01_2"
+    task_one_dir.mkdir(parents=True, exist_ok=True)
+    write_json(
+        task_one_dir / "task_summary.json",
+        {
+            "task_id": "earth-bench-c-2",
+            "original_question_id": "2",
+            "task_success": True,
+            "iterations": [],
+            "final_skill_headers": [],
+            "promoted_skills": [
+                {
+                    "skill_name": "task-01-2-skill-01",
+                    "source_skill_name": "existing-skill",
+                    "description": "Existing promoted skill.",
+                    "source_task_id": "earth-bench-c-2",
+                    "source_question_id": "2",
+                    "source_task_label": "task_01_2",
+                    "relative_skill_dir": "successful_skill_library/task-01-2-skill-01",
+                }
+            ],
+            "promoted_skill_count": 1,
+            "promotion_error": "",
+            "discarded_generated_skill_count": 0,
+            "isolated_runtime_cleaned": True,
+        },
+    )
+
+    stale_partial_file = run_dir / "task_02_3" / "iteration_01" / "stale.txt"
+    stale_partial_file.parent.mkdir(parents=True, exist_ok=True)
+    stale_partial_file.write_text("stale", encoding="utf-8")
+
+    call_log: list[str] = []
+
+    def fake_train_task(self: SkillRLTrainer, task, task_run_dir: Path) -> dict:
+        call_log.append(task.task_id)
+        task_run_dir.mkdir(parents=True, exist_ok=True)
+        write_skill_bundle(
+            self.config.skill_library_root,
+            "new-local-skill",
+            {
+                "SKILL.md": (
+                    "---\n"
+                    "name: new-local-skill\n"
+                    "description: New local skill.\n"
+                    "consumption-mode: planner\n"
+                    "allowed-tools: get_filelist\n"
+                    "---\n"
+                    "# New\n"
+                )
+            },
+        )
+        summary = {
+            "task_id": task.task_id,
+            "original_question_id": task.metadata.get("original_question_id", ""),
+            "task_success": True,
+            "iterations": [],
+            "final_skill_headers": [header.__dict__ for header in discover_skills(self.config.skill_library_root)],
+        }
+        write_json(task_run_dir / "task_summary.json", summary)
+        return summary
+
+    monkeypatch.setattr(SkillRLTrainer, "train_task", fake_train_task)
+
+    resumed_run_dir = trainer.train_tasks_model3(run_name="model3_resume_test", concurrency=2, resume=True)
+
+    assert resumed_run_dir == run_dir
+    assert call_log == ["earth-bench-c-3"]
+    assert not stale_partial_file.exists()
+
+    promoted_headers = discover_skills(run_dir / "successful_skill_library")
+    assert [header.name for header in promoted_headers] == ["task-01-2-skill-01", "task-02-3-skill-01"]
+
+    run_summary_text = (run_dir / "run_summary.json").read_text(encoding="utf-8")
+    successful_skill_summary_text = (run_dir / "successful_skill_summary.json").read_text(encoding="utf-8")
+    assert '"task_count": 2' in run_summary_text
+    assert '"successful_task_count": 2' in successful_skill_summary_text
+    assert '"skill_count": 2' in successful_skill_summary_text
