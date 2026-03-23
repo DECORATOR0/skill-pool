@@ -14,6 +14,7 @@ class LLMConfig:
     base_url: str
     api_key: str
     backup_url: str | None = None
+    api_mode: str = "chat_completions"
     temperature: float = 0.2
     max_tokens: int | None = None
     timeout_seconds: int = 180
@@ -114,6 +115,7 @@ def _llm_from_dict(name: str, data: dict[str, Any]) -> LLMConfig:
         base_url=data["base_url"],
         api_key=data["api_key"],
         backup_url=data.get("backup_url"),
+        api_mode=str(data.get("api_mode", "chat_completions")),
         temperature=float(data.get("temperature", 0.2)),
         max_tokens=max_tokens,
         timeout_seconds=int(data.get("timeout_seconds", 180)),

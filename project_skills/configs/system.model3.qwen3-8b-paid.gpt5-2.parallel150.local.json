@@ -1,0 +1,76 @@
+{
+  "actor": {
+    "model": "gpt-5.2",
+    "base_url": "https://node-hk.sssaicode.com/api/v1/responses",
+    "api_key": "sk-sssaicode-9d340d3064511a95fb7f428f2356dfc7a08c724271a66aa1bdc72a3b2af85cb4",
+    "api_mode": "responses_sse",
+    "temperature": 0.3,
+    "timeout_seconds": 180
+  },
+  "critic": {
+    "model": "gpt-5.2",
+    "base_url": "https://node-hk.sssaicode.com/api/v1/responses",
+    "api_key": "sk-sssaicode-9d340d3064511a95fb7f428f2356dfc7a08c724271a66aa1bdc72a3b2af85cb4",
+    "api_mode": "responses_sse",
+    "temperature": 0.3,
+    "timeout_seconds": 180
+  },
+  "router": {
+    "model": "qwen3-8b",
+    "base_url": "http://35.220.164.252:3888/v1",
+    "api_key": "sk-JhritIDG3G8QxS6pPJ1kIfqxWorzSAZgHgkLz4EA0RgFl9lQ",
+    "temperature": 0.1,
+    "timeout_seconds": 180,
+    "enable_thinking": true
+  },
+  "executor": {
+    "model": "qwen3-8b",
+    "base_url": "http://35.220.164.252:3888/v1",
+    "api_key": "sk-JhritIDG3G8QxS6pPJ1kIfqxWorzSAZgHgkLz4EA0RgFl9lQ",
+    "temperature": 0.1,
+    "max_tokens": null,
+    "timeout_seconds": 180,
+    "enable_thinking": true
+  },
+  "planner": {
+    "model": "qwen3-8b",
+    "base_url": "http://35.220.164.252:3888/v1",
+    "api_key": "sk-JhritIDG3G8QxS6pPJ1kIfqxWorzSAZgHgkLz4EA0RgFl9lQ",
+    "temperature": 0.1,
+    "max_tokens": null,
+    "timeout_seconds": 180,
+    "enable_thinking": true
+  },
+  "parameter_worker": {
+    "model": "qwen3-8b",
+    "base_url": "http://35.220.164.252:3888/v1",
+    "backup_url": "http://34.13.73.248:3888/v1",
+    "api_key": "sk-JhritIDG3G8QxS6pPJ1kIfqxWorzSAZgHgkLz4EA0RgFl9lQ",
+    "temperature": 0.0,
+    "max_tokens": null,
+    "timeout_seconds": 180,
+    "enable_thinking": false
+  },
+  "paths": {
+    "workspace_root": "D:/skills-evo/project_skills/project_skills",
+    "prompt_root": "D:/skills-evo/project_skills/project_skills/prompts_model3",
+    "run_root": "D:/skills-evo/project_skills/project_skills/runs/model3_parallel",
+    "skill_library_root": "D:/skills-evo/project_skills/project_skills/runs/model3_parallel/_template_skill_library",
+    "experience_buffer_path": "D:/skills-evo/project_skills/project_skills/runs/model3_parallel/_template_runtime_state/experience_buffer.jsonl",
+    "dataset_path": "D:/skills-evo/project_skills/project_skills/benchmark/question.json",
+    "converted_dataset_path": "D:/skills-evo/project_skills/project_skills/data/converted/earth_bench_skill_rl/question.json",
+    "docs_root": "D:/skills-evo/project_skills/project_skills/docs"
+  },
+  "runtime": {
+    "max_router_candidates": 64,
+    "skill_match_threshold": 80.0,
+    "skill_consumption_mode": "planner",
+    "max_executor_steps": 20,
+    "max_actor_steps": 8,
+    "max_iterations_per_task": 10,
+    "skill_count_limit": 6,
+    "task_concurrency": 150,
+    "python_executable": "E:/miniconda3/envs/earth-bench-skill-eval/python.exe",
+    "shell_program": "powershell"
+  }
+}
