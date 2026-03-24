@@ -580,8 +580,15 @@ class Toolbox:
         )
 
     def run_shell(self, command: str) -> dict[str, Any]:
+        shell_name = Path(self.context.shell_program).name.lower()
+        if shell_name in {"bash", "sh", "zsh"}:
+            cmd = [self.context.shell_program, "-lc", command]
+        elif shell_name in {"cmd", "cmd.exe"}:
+            cmd = [self.context.shell_program, "/C", command]
+        else:
+            cmd = [self.context.shell_program, "-Command", command]
         completed = subprocess.run(
-            [self.context.shell_program, "-Command", command],
+            cmd,
             cwd=self.context.workspace_root,
             capture_output=True,
             text=True,

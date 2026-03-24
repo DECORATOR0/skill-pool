@@ -11,6 +11,56 @@ from .tools import Toolbox
 from .utils import extract_json_object
 
 
+def _summarize_large_value(value, *, list_head: int = 20, list_tail: int = 20):
+    if isinstance(value, list) and len(value) > list_head + list_tail:
+        return {
+            "truncated": True,
+            "item_count": len(value),
+            "head": value[:list_head],
+            "tail": value[-list_tail:],
+        }
+    if isinstance(value, dict):
+        summarized = {}
+        for key, item in value.items():
+            if isinstance(item, list) and len(item) > list_head + list_tail:
+                summarized[key] = {
+                    "truncated": True,
+                    "item_count": len(item),
+                    "head": item[:list_head],
+                    "tail": item[-list_tail:],
+                }
+            elif isinstance(item, str) and len(item) > 2000:
+                summarized[key] = {
+                    "truncated": True,
+                    "char_count": len(item),
+                    "head": item[:1200],
+                    "tail": item[-400:],
+                }
+            else:
+                summarized[key] = item
+        return summarized
+    return value
+
+
+def _observation_for_prompt(raw_result, *, limit: int = 6000) -> str:
+    observation = json.dumps(raw_result, ensure_ascii=False, default=str)
+    if len(observation) <= limit:
+        return observation
+    summarized = _summarize_large_value(raw_result)
+    compact = json.dumps(summarized, ensure_ascii=False, default=str)
+    if len(compact) <= limit:
+        return compact
+    return json.dumps(
+        {
+            "truncated": True,
+            "char_count": len(observation),
+            "head": observation[:4000],
+            "tail": observation[-1200:],
+        },
+        ensure_ascii=False,
+    )
+
+
 class JSONToolAgent:
     def __init__(self, llm_config: LLMConfig, prompt_root: Path, toolbox: Toolbox):
         self.llm = OpenAICompatibleLLM(llm_config)
@@ -73,7 +123,7 @@ class JSONToolAgent:
                 else:
                     success = True
                     error = ""
-                observation = json.dumps(raw_result, ensure_ascii=False, default=str)
+                observation = _observation_for_prompt(raw_result)
             except Exception as exc:
                 raw_result = {"error": str(exc)}
                 observation = json.dumps(raw_result, ensure_ascii=False)

@@ -5,7 +5,9 @@ import time
 from dataclasses import dataclass
 from pathlib import Path
 from typing import Any
+from urllib.parse import urlparse
 
+import httpx
 from openai import OpenAI
 
 from .config import LLMConfig
@@ -25,9 +27,32 @@ class LLMCallResult:
 class OpenAICompatibleLLM:
     def __init__(self, config: LLMConfig):
         self.config = config
-        self.client = OpenAI(base_url=config.base_url, api_key=config.api_key, timeout=config.timeout_seconds)
+        self.client = OpenAI(
+            base_url=config.base_url,
+            api_key=config.api_key,
+            timeout=config.timeout_seconds,
+            http_client=httpx.Client(
+                timeout=config.timeout_seconds,
+                trust_env=self._should_trust_env(config.base_url),
+            ),
+        )
         self.max_retries = 5
         self.retry_delay_seconds = 6
+
+    @staticmethod
+    def _should_trust_env(base_url: str) -> bool:
+        host = (urlparse(base_url).hostname or "").lower()
+        if host in {"127.0.0.1", "localhost"}:
+            return False
+        if host in {"35.220.164.252", "api.boyuerichdata.opensphereai.com"}:
+            return False
+        if host.startswith("192.168.") or host.startswith("10."):
+            return False
+        if host.startswith("172.16.") or host.startswith("172.17.") or host.startswith("172.18.") or host.startswith("172.19."):
+            return False
+        if host.startswith("172.2") or host.startswith("172.3"):
+            return False
+        return True
 
     def _should_retry(self, exc: Exception) -> bool:
         message = str(exc).lower()
