@@ -1,0 +1,4 @@
+qwen3-8b:sk-fJAaw6TWC8JjH7mzHDqY78lcpr6VdvZhkXVD6isc3oLi7fGZ
+
+gpt-5.2:sk-sssaicode-9d340d3064511a95fb7f428f2356dfc7a08c724271a66aa1bdc72a3b2af85cb4
+这个gpt5.2的使用方法在两个py文件里写好了

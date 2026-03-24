@@ -1,0 +1,23 @@
+name: earth-bench-skill-eval
+channels:
+  - conda-forge
+dependencies:
+  - python=3.10
+  - pip
+  - numpy
+  - pandas
+  - scipy
+  - pyyaml
+  - httpx
+  - rasterio
+  - gdal
+  - opencv
+  - scikit-image
+  - statsmodels
+  - ruptures
+  - matplotlib
+  - transformers
+  - huggingface_hub
+  - pip:
+      - openai>=1
+      - fastmcp
